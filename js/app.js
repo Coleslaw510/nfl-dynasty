@@ -8,6 +8,11 @@
   let league = null;
   let state = null;
   let activeTab = "schedule";
+  let osTab = "step"; // step | roster | cap
+  let faSignId = null; // expand year picker for this FA id
+  let resignSignId = null;
+  let draftTradeMy = null;
+  let draftTradeTheir = null;
 
   function toast(msg) {
     const el = document.createElement("div");
@@ -583,8 +588,44 @@
   }
 
   /* -------- Offseason -------- */
+  function rosterLimit() {
+    return (state && state.rosterLimit) || E.ROSTER_LIMIT || 53;
+  }
+
+  function spotsLeft() {
+    return rosterLimit() - E.userTeam(state).roster.length;
+  }
+
+  function capacityBanner(extra) {
+    const team = E.userTeam(state);
+    const limit = rosterLimit();
+    const left = limit - team.roster.length;
+    const room = state.salaryCap - E.teamCapHit(team);
+    const full = left <= 0;
+    return `<div class="capacity-banner ${full ? "is-full" : ""}">
+      <div><strong>${team.roster.length}/${limit}</strong> roster · <span class="${left <= 0 ? "bad" : ""}">${left} open</span></div>
+      <div class="muted small">Cap room ${E.money(room)}${extra ? " · " + extra : ""}</div>
+    </div>`;
+  }
+
+  function yearPickerHtml(p, selectedYears, dataAttr) {
+    const opts = E.yearOptionsFor(p);
+    const suggested = E.contractYears(p.ovr, p.age);
+    const y = selectedYears || suggested;
+    const terms = E.contractTerms(p, y);
+    const buttons = opts.map((n) => {
+      const t = E.contractTerms(p, n);
+      const active = n === y ? " active" : "";
+      return `<button type="button" class="year-chip${active}" data-years="${n}" ${dataAttr}>${n}y · ${E.money(t.aav)}/yr</button>`;
+    }).join("");
+    return `<div class="contract-picker">
+      <div class="muted small">Deal terms · suggested ${suggested}y</div>
+      <div class="year-row">${buttons}</div>
+      <div class="contract-summary"><strong>${terms.years} yrs</strong> · ${E.money(terms.aav)}/yr · total ${E.money(terms.total)}</div>
+    </div>`;
+  }
+
   function ensureExpiredCollected() {
-    // Safety: if an older save skipped tickContracts, tick once per season year
     if (state._contractsYear !== state.year) {
       E.tickContracts(state);
       state._contractsYear = state.year;
@@ -595,187 +636,565 @@
       const expired = E.collectExpired(state);
       state._userExpired = expired.filter((p) => p.fromTeamId === state.userTeamId);
       E.cpuResign(state, E.mulberry32(E.hashSeed(state.rngSeed + ":resign" + state.year)));
-      // Keep user-expired players in FA for resign decisions (cpuResign never touches user team)
       state._expiredReady = true;
       E.save(state);
     }
+  }
+
+  function syncOsTabs() {
+    $$("#osTabs .tab").forEach((b) => b.classList.toggle("active", b.dataset.osTab === osTab));
   }
 
   function renderOffseason() {
     renderTeamChip($("#osTeamChip"));
     refreshMeta();
     const step = state.offseasonStep || "resign";
-    $("#osStepLabel").textContent = ({ resign: "Resign players", fa: "Free agency", draft: "Draft", progress: "Progression", done: "Ready" })[step] || step;
-    $("#osCapLabel").textContent = `Room ${E.money(state.salaryCap - E.teamCapHit(E.userTeam(state)))}`;
-    const body = $("#osBody");
+    $("#osStepLabel").textContent = ({
+      resign: "Re-sign",
+      fa: "Free agency",
+      draft: "Draft",
+      progress: "Progression",
+      done: "Ready"
+    })[step] || step;
+    const team = E.userTeam(state);
+    $("#osCapLabel").textContent = `${team.roster.length}/${rosterLimit()} · Room ${E.money(state.salaryCap - E.teamCapHit(team))}`;
     const btn = $("#btnOsPrimary");
     btn.disabled = false;
+    syncOsTabs();
 
-    if (step === "resign") {
-      ensureExpiredCollected();
-      const list = state._userExpired || [];
-      let html = `<div class="card"><h3>Resign your free agents</h3>
-        <p class="muted small">Contract years hit zero after the season. Re-sign who you want — unsigned players stay in free agency.</p>`;
-      if (!list.length) {
-        html += `<p class="muted">No pending resigns this year. Hit Continue to open free agency (${(state.freeAgents || []).length} players available).</p>`;
-      }
-      for (const p of list) {
-        const still = (state.freeAgents || []).some((x) => x.id === p.id);
-        if (!still) continue;
-        html += `<div class="list-actions" style="padding:8px 0;border-top:1px solid var(--line)">
-          <div><strong>${p.n}</strong> ${p.pos} ${ovrBadge(p.ovr)} · age ${p.age}<div class="muted small">Asking ${E.money(p.asking)}</div></div>
+    if (osTab === "roster") {
+      renderOsRoster();
+      btn.textContent = stepContinueLabel(step);
+      return;
+    }
+    if (osTab === "cap") {
+      renderOsCap();
+      btn.textContent = stepContinueLabel(step);
+      return;
+    }
+
+    if (step === "resign") return renderResignStep(btn);
+    if (step === "fa") return renderFaStep(btn);
+    if (step === "draft") return renderDraftStep(btn);
+    if (step === "progress") return renderProgressStep(btn);
+
+    $("#osBody").innerHTML = `<div class="card"><p class="muted">Unknown offseason step.</p></div>`;
+    btn.textContent = "Continue";
+  }
+
+  function stepContinueLabel(step) {
+    return ({
+      resign: "Continue to free agency",
+      fa: "Continue to draft",
+      draft: state.draft && state.draft.pickIndex >= (state.draft.picksTotal || 0) ? "Run progression" : "Sim to my pick",
+      progress: `Start ${state.year + 1} season`
+    })[step] || "Continue";
+  }
+
+  function renderOsRoster() {
+    const body = $("#osBody");
+    const team = E.userTeam(state);
+    const limit = rosterLimit();
+    let html = capacityBanner("Cut anyone to open a roster spot — they’ll hit free agency.");
+    html += `<div class="card"><h3>My roster · cut to make room</h3>
+      <p class="muted small">Sorted by OVR (lowest first). Cutting frees a spot immediately.</p>`;
+    const sorted = team.roster.slice().sort((a, b) => a.ovr - b.ovr || b.salary - a.salary);
+    for (const p of sorted) {
+      html += `<div class="list-actions" style="padding:8px 0;border-top:1px solid var(--line)">
+        <div><strong>${escapeHtml(p.n)}</strong> ${escapeHtml(p.pos)} ${ovrBadge(p.ovr)} · age ${p.age}
+          <div class="muted small">${E.money(p.salary)} · ${p.yearsLeft}y left</div></div>
+        <button type="button" class="btn btn-sm btn-ghost danger" data-cut="${p.id}">Cut</button>
+      </div>`;
+    }
+    if (!sorted.length) html += `<p class="muted">Roster empty.</p>`;
+    html += `</div>`;
+    body.innerHTML = html;
+    body.querySelectorAll("[data-cut]").forEach((b) => b.addEventListener("click", () => {
+      const id = +b.dataset.cut;
+      const cut = E.releasePlayer(state, state.userTeamId, id, true);
+      if (!cut) return;
+      E.save(state);
+      refreshMeta();
+      renderOffseason();
+      toast(`Cut ${cut.n} · ${spotsLeft()} spots open`);
+    }));
+  }
+
+  function renderOsCap() {
+    const body = $("#osBody");
+    const t = E.userTeam(state);
+    const hit = E.teamCapHit(t);
+    const room = state.salaryCap - hit;
+    const pct = Math.min(100, Math.round((hit / state.salaryCap) * 100));
+    let html = capacityBanner();
+    html += `<div class="card"><h3>Salary cap</h3>
+      <div>${E.money(hit)} of ${E.money(state.salaryCap)} · room ${E.money(room)}</div>
+      <div class="bar"><span style="width:${pct}%;background:${room < 0 ? "var(--danger)" : "var(--accent)"}"></span></div></div>`;
+    html += `<div class="card"><h3>Contracts</h3><table class="table"><thead><tr><th>Player</th><th>OVR</th><th>Age</th><th>Left</th><th>AAV</th></tr></thead><tbody>`;
+    for (const p of t.roster.slice().sort((a, b) => b.salary - a.salary)) {
+      html += `<tr><td>${escapeHtml(p.n)}</td><td>${ovrBadge(p.ovr)}</td><td>${p.age}</td><td>${p.yearsLeft}y</td><td>${E.money(p.salary)}</td></tr>`;
+    }
+    html += `</tbody></table></div>`;
+    body.innerHTML = html;
+  }
+
+  function renderResignStep(btn) {
+    ensureExpiredCollected();
+    const body = $("#osBody");
+    const list = state._userExpired || [];
+    let html = capacityBanner("Pick a contract length before re-signing.");
+    html += `<div class="card"><h3>Re-sign your free agents</h3>
+      <p class="muted small">Contract years hit zero. Choose length, then re-sign — or let them walk into free agency. Use the <strong>Roster</strong> tab anytime to cut.</p>`;
+    let pending = 0;
+    for (const p of list) {
+      const still = (state.freeAgents || []).some((x) => x.id === p.id);
+      if (!still) continue;
+      pending++;
+      const open = resignSignId === p.id;
+      const suggested = E.contractYears(p.ovr, p.age);
+      const chosen = (state._resignYears && state._resignYears[p.id]) || suggested;
+      html += `<div class="sign-row" style="padding:10px 0;border-top:1px solid var(--line)">
+        <div class="list-actions">
+          <div><strong>${escapeHtml(p.n)}</strong> ${escapeHtml(p.pos)} ${ovrBadge(p.ovr)} · age ${p.age}
+            <div class="muted small">Asking ~${E.money(p.asking)}</div></div>
           <div class="actions">
-            <button type="button" class="btn btn-sm btn-primary" data-resign="${p.id}">Re-sign</button>
+            <button type="button" class="btn btn-sm btn-primary" data-resign-open="${p.id}">${open ? "Hide" : "Re-sign…"}</button>
             <button type="button" class="btn btn-sm btn-ghost" data-release="${p.id}">Let walk</button>
           </div>
         </div>`;
-      }
-      html += `</div>`;
-      body.innerHTML = html;
-      btn.textContent = "Continue to free agency";
-      body.querySelectorAll("[data-resign]").forEach((b) => b.addEventListener("click", () => {
-        const id = +b.dataset.resign;
-        const p = state.freeAgents.find((x) => x.id === id);
-        if (!p) return;
-        const sal = p.asking || p.salary;
-        if (E.teamCapHit(E.userTeam(state)) + sal > state.salaryCap) return toast("Over the cap");
-        const years = E.contractYears(p.ovr, p.age);
-        E.userTeam(state).roster.push({ ...p, salary: sal, yearsLeft: years, asking: undefined, fromTeamId: undefined });
-        E.userTeam(state).roster = E.sortRoster(E.userTeam(state).roster);
-        E.recomputeRatings(E.userTeam(state));
-        state.freeAgents = state.freeAgents.filter((x) => x.id !== id);
-        state._userExpired = (state._userExpired || []).filter((x) => x.id !== id);
-        E.save(state); renderOffseason(); toast(`Re-signed ${p.n}`);
-      }));
-      body.querySelectorAll("[data-release]").forEach((b) => b.addEventListener("click", () => {
-        const id = +b.dataset.release;
-        state._userExpired = (state._userExpired || []).filter((x) => x.id !== id);
-        E.save(state); renderOffseason(); toast("Player will hit free agency");
-      }));
-      return;
-    }
-
-    if (step === "fa") {
-      if (!Array.isArray(state.freeAgents)) state.freeAgents = [];
-      let html = `<div class="card"><h3>Free agency</h3>
-        <p class="muted small">${state.freeAgents.length} players on the market. Sign under the 53-man limit and salary cap.</p>
-        <div class="filters"><input id="faSearch" placeholder="Search FA…" /><select id="faBucket"><option value="">All positions</option>${E.BUCKET_ORDER.map((b)=>`<option value="${b}">${b}</option>`).join("")}</select></div>
-        <div id="faList"></div></div>`;
-      body.innerHTML = html;
-      const draw = () => {
-        const q = (($("#faSearch") && $("#faSearch").value) || "").toLowerCase();
-        const bucket = ($("#faBucket") && $("#faBucket").value) || "";
-        const maxCount = state.rosterLimit || E.ROSTER_LIMIT || 53;
-        let listHtml = "";
-        let shown = 0;
-        for (const p of state.freeAgents) {
-          if (bucket && p.bucket !== bucket) continue;
-          if (q && !(p.n || "").toLowerCase().includes(q)) continue;
-          shown++;
-          if (shown > 120) break;
-          listHtml += `<div class="list-actions" style="padding:8px 0;border-top:1px solid var(--line)">
-            <div><strong>${p.n}</strong> ${p.pos} ${ovrBadge(p.ovr)} · ${p.age} yrs old<div class="muted small">${E.money(p.asking || p.salary)} · ${p.bucket}</div></div>
-            <button type="button" class="btn btn-sm btn-primary" data-sign="${p.id}">Sign</button>
-          </div>`;
-        }
-        $("#faList").innerHTML = listHtml || `<p class="muted">No players match.</p>`;
-        $("#faList").querySelectorAll("[data-sign]").forEach((b) => b.addEventListener("click", () => {
-          const id = +b.dataset.sign;
-          const p = state.freeAgents.find((x) => x.id === id);
-          if (!p) return;
-          const team = E.userTeam(state);
-          if (team.roster.length >= maxCount) return toast("Roster full (53)");
-          const sal = p.asking || p.salary;
-          if (E.teamCapHit(team) + sal > state.salaryCap) return toast("Over the cap");
-          team.roster.push({ ...p, salary: sal, yearsLeft: E.contractYears(p.ovr, p.age), asking: undefined, fromTeamId: undefined });
-          team.roster = E.sortRoster(team.roster);
-          E.recomputeRatings(team);
-          state.freeAgents = state.freeAgents.filter((x) => x.id !== id);
-          E.save(state); refreshMeta(); draw(); toast(`Signed ${p.n}`);
-        }));
-      };
-      $("#faSearch").addEventListener("input", draw);
-      $("#faBucket").addEventListener("change", draw);
-      draw();
-      btn.textContent = "Continue to draft";
-      return;
-    }
-
-    if (step === "draft") {
-      if (!state.draft) {
-        // Recover if Continue somehow skipped draft init
-        beginDraft();
-      }
-      const d = state.draft;
-      const onClock = d.order[d.pickIndex % 32];
-      const round = Math.floor(d.pickIndex / 32) + 1;
-      const pickInRound = (d.pickIndex % 32) + 1;
-      let html = `<div class="card"><h3>Draft · Round ${round}, Pick ${pickInRound}</h3>`;
-      if (d.pickIndex >= d.picksTotal) {
-        html += `<p class="muted">Draft complete (3 rounds).</p></div>`;
-        body.innerHTML = html;
-        btn.textContent = "Run progression";
-        return;
-      }
-      if (onClock !== state.userTeamId) {
-        html += `<p class="muted">CPU is picking…</p></div>`;
-        body.innerHTML = html;
-        btn.textContent = "Sim to my pick";
-        setTimeout(() => {
-          if (state.offseasonStep === "draft" && state.draft && state.draft.order[state.draft.pickIndex % 32] !== state.userTeamId) {
-            E.runCpuDraftPicks(state, E.mulberry32(E.hashSeed(state.rngSeed + ":d" + state.draft.pickIndex)), true);
-            E.save(state); renderOffseason();
-          }
-        }, 40);
-        return;
-      }
-      html += `<p class="muted small">You're on the clock. Board sorted by overall.</p>`;
-      const board = d.pool.slice(0, 40);
-      for (const p of board) {
-        html += `<div class="list-actions" style="padding:8px 0;border-top:1px solid var(--line)">
-          <div><strong>#${p.draftRank}</strong> ${p.n} · ${p.pos} ${ovrBadge(p.ovr)} · age ${p.age}</div>
-          <button type="button" class="btn btn-sm btn-primary" data-draft="${p.id}">Draft</button>
+      if (open) {
+        html += yearPickerHtml(p, chosen, `data-resign-years="${p.id}"`);
+        html += `<div class="actions" style="margin-top:8px">
+          <button type="button" class="btn btn-sm btn-primary" data-resign-confirm="${p.id}">Confirm re-sign</button>
         </div>`;
       }
       html += `</div>`;
-      body.innerHTML = html;
-      btn.textContent = "Auto-pick best need";
-      body.querySelectorAll("[data-draft]").forEach((b) => b.addEventListener("click", () => {
-        draftPlayer(+b.dataset.draft);
-      }));
+    }
+    if (!pending) {
+      html += `<p class="muted">No pending re-signs. Hit Continue for free agency (${(state.freeAgents || []).length} players).</p>`;
+    }
+    html += `</div>`;
+    body.innerHTML = html;
+    btn.textContent = "Continue to free agency";
+
+    body.querySelectorAll("[data-resign-open]").forEach((b) => b.addEventListener("click", () => {
+      const id = +b.dataset.resignOpen;
+      resignSignId = resignSignId === id ? null : id;
+      renderOffseason();
+    }));
+    body.querySelectorAll("[data-resign-years]").forEach((b) => b.addEventListener("click", () => {
+      const id = +b.dataset.resignYears;
+      const years = +b.dataset.years;
+      const p = state.freeAgents.find((x) => x.id === id);
+      if (!p) return;
+      // stash chosen years on pending map
+      state._resignYears = state._resignYears || {};
+      state._resignYears[id] = years;
+      resignSignId = id;
+      renderOffseason();
+    }));
+    // re-apply selected year highlight via _resignYears when rendering - fix yearPicker to use stored
+    body.querySelectorAll("[data-resign-confirm]").forEach((b) => b.addEventListener("click", () => {
+      const id = +b.dataset.resignConfirm;
+      doResign(id);
+    }));
+    body.querySelectorAll("[data-release]").forEach((b) => b.addEventListener("click", () => {
+      const id = +b.dataset.release;
+      state._userExpired = (state._userExpired || []).filter((x) => x.id !== id);
+      resignSignId = null;
+      E.save(state);
+      renderOffseason();
+      toast("Player will hit free agency");
+    }));
+
+    // If year chips need stored years, re-render picker correctly:
+    // patch: when opening, use state._resignYears[id]
+  }
+
+  function doResign(id) {
+    const p = state.freeAgents.find((x) => x.id === id);
+    if (!p) return;
+    const team = E.userTeam(state);
+    if (team.roster.length >= rosterLimit()) {
+      osTab = "roster";
+      toast("Roster full — cut someone on the Roster tab first");
+      renderOffseason();
       return;
     }
+    const years = (state._resignYears && state._resignYears[id]) || E.contractYears(p.ovr, p.age);
+    const terms = E.contractTerms(p, years);
+    if (E.teamCapHit(team) + terms.aav > state.salaryCap) {
+      toast("Over the cap for that deal");
+      return;
+    }
+    team.roster.push({ ...p, salary: terms.aav, yearsLeft: terms.years, asking: undefined, fromTeamId: undefined });
+    team.roster = E.sortRoster(team.roster);
+    E.recomputeRatings(team);
+    state.freeAgents = state.freeAgents.filter((x) => x.id !== id);
+    state._userExpired = (state._userExpired || []).filter((x) => x.id !== id);
+    resignSignId = null;
+    E.save(state);
+    renderOffseason();
+    toast(`Re-signed ${p.n} · ${terms.years}y / ${E.money(terms.aav)}`);
+  }
 
-    if (step === "progress") {
-      const log = state.offseasonLog || [];
-      let html = `<div class="card"><h3>Offseason progression</h3>
-        <p class="muted small">Young players (≤28) improve · older players (31+) regress · some retire.</p>`;
-      const mine = log.filter((x) => x.teamId === state.userTeamId);
-      if (!mine.length) html += `<p class="muted">No notable changes on your roster.</p>`;
-      for (const x of mine.slice(0, 40)) {
-        if (x.retired) html += `<div class="muted small">${x.name} retired (age ${x.age}, OVR ${x.ovr})</div>`;
-        else html += `<div class="muted small">${x.name}: ${x.before} → <strong>${x.after}</strong> (age ${x.age})</div>`;
+  function renderFaStep(btn) {
+    if (!Array.isArray(state.freeAgents)) state.freeAgents = [];
+    const body = $("#osBody");
+    const team = E.userTeam(state);
+    const left = spotsLeft();
+    let html = capacityBanner(left <= 0
+      ? "Roster full — open Roster tab and cut before signing."
+      : "Choose contract length when you sign.");
+    html += `<div class="card"><h3>Free agency</h3>
+      <p class="muted small">${state.freeAgents.length} on the market. Sign under the 53-man limit and salary cap.
+        <button type="button" class="btn btn-sm btn-ghost" id="btnOsGotoRoster">Manage roster</button></p>
+      <div class="filters">
+        <input id="faSearch" placeholder="Search FA…" />
+        <select id="faBucket"><option value="">All positions</option>${E.BUCKET_ORDER.map((b) => `<option value="${b}">${b}</option>`).join("")}</select>
+      </div>
+      <div id="faList"></div></div>`;
+
+    // Quick-cut strip of lowest OVRs when full or nearly full
+    if (left <= 2) {
+      const lowest = team.roster.slice().sort((a, b) => a.ovr - b.ovr).slice(0, 8);
+      html += `<div class="card"><h3>Quick cuts</h3><p class="muted small">Free a spot without leaving FA.</p>`;
+      for (const p of lowest) {
+        html += `<div class="list-actions" style="padding:6px 0;border-top:1px solid var(--line)">
+          <div><strong>${escapeHtml(p.n)}</strong> ${escapeHtml(p.pos)} ${ovrBadge(p.ovr)} · ${E.money(p.salary)}</div>
+          <button type="button" class="btn btn-sm btn-ghost danger" data-cut="${p.id}">Cut</button>
+        </div>`;
       }
       html += `</div>`;
-      body.innerHTML = html;
-      btn.textContent = `Start ${state.year + 1} season`;
-      return;
     }
 
-    body.innerHTML = `<div class="card"><p class="muted">Unknown offseason step.</p></div>`;
-    btn.textContent = "Continue";
+    body.innerHTML = html;
+    btn.textContent = "Continue to draft";
+
+    const goto = $("#btnOsGotoRoster");
+    if (goto) goto.addEventListener("click", () => { osTab = "roster"; renderOffseason(); });
+
+    body.querySelectorAll("[data-cut]").forEach((b) => b.addEventListener("click", () => {
+      const cut = E.releasePlayer(state, state.userTeamId, +b.dataset.cut, true);
+      if (!cut) return;
+      E.save(state);
+      refreshMeta();
+      renderOffseason();
+      toast(`Cut ${cut.n}`);
+    }));
+
+    const draw = () => {
+      const q = (($("#faSearch") && $("#faSearch").value) || "").toLowerCase();
+      const bucket = ($("#faBucket") && $("#faBucket").value) || "";
+      let listHtml = "";
+      let shown = 0;
+      for (const p of state.freeAgents) {
+        if (bucket && p.bucket !== bucket) continue;
+        if (q && !(p.n || "").toLowerCase().includes(q)) continue;
+        shown++;
+        if (shown > 100) break;
+        const open = faSignId === p.id;
+        const years = (state._faYears && state._faYears[p.id]) || E.contractYears(p.ovr, p.age);
+        listHtml += `<div class="sign-row" style="padding:10px 0;border-top:1px solid var(--line)">
+          <div class="list-actions">
+            <div><strong>${escapeHtml(p.n)}</strong> ${escapeHtml(p.pos)} ${ovrBadge(p.ovr)} · ${p.age} yrs
+              <div class="muted small">${E.money(p.asking || p.salary)} ask · ${escapeHtml(p.bucket)}</div></div>
+            <button type="button" class="btn btn-sm btn-primary" data-sign-open="${p.id}">${open ? "Hide" : (spotsLeft() <= 0 ? "Need room" : "Sign…")}</button>
+          </div>`;
+        if (open) {
+          if (spotsLeft() <= 0) {
+            listHtml += `<p class="muted small" style="margin:8px 0">Roster full. Cut someone above (Quick cuts) or use the Roster tab, then come back.</p>`;
+          } else {
+            listHtml += yearPickerHtml(Object.assign({}, p, { asking: p.asking || p.salary }), years, `data-fa-years="${p.id}"`);
+            listHtml += `<div class="actions" style="margin-top:8px">
+              <button type="button" class="btn btn-sm btn-primary" data-sign-confirm="${p.id}">Confirm sign</button>
+            </div>`;
+          }
+        }
+        listHtml += `</div>`;
+      }
+      $("#faList").innerHTML = listHtml || `<p class="muted">No players match.</p>`;
+      $("#faList").querySelectorAll("[data-sign-open]").forEach((b) => b.addEventListener("click", () => {
+        const id = +b.dataset.signOpen;
+        if (spotsLeft() <= 0 && faSignId !== id) {
+          toast("Roster full — cut a player first");
+        }
+        faSignId = faSignId === id ? null : id;
+        draw();
+        refreshMeta();
+        // update capacity without full re-render of search
+        const ban = body.querySelector(".capacity-banner");
+        if (ban) ban.outerHTML = capacityBanner(spotsLeft() <= 0
+          ? "Roster full — cut before signing."
+          : "Choose contract length when you sign.");
+      }));
+      $("#faList").querySelectorAll("[data-fa-years]").forEach((b) => b.addEventListener("click", () => {
+        const id = +b.dataset.faYears;
+        state._faYears = state._faYears || {};
+        state._faYears[id] = +b.dataset.years;
+        faSignId = id;
+        draw();
+      }));
+      $("#faList").querySelectorAll("[data-sign-confirm]").forEach((b) => b.addEventListener("click", () => {
+        doFaSign(+b.dataset.signConfirm);
+      }));
+    };
+    $("#faSearch").addEventListener("input", draw);
+    $("#faBucket").addEventListener("change", draw);
+    draw();
+  }
+
+  function doFaSign(id) {
+    const p = state.freeAgents.find((x) => x.id === id);
+    if (!p) return;
+    const team = E.userTeam(state);
+    if (team.roster.length >= rosterLimit()) {
+      toast("Roster full — cut someone first");
+      osTab = "roster";
+      renderOffseason();
+      return;
+    }
+    const years = (state._faYears && state._faYears[id]) || E.contractYears(p.ovr, p.age);
+    const terms = E.contractTerms(p, years);
+    if (E.teamCapHit(team) + terms.aav > state.salaryCap) {
+      toast("Over the cap for that deal");
+      return;
+    }
+    team.roster.push({ ...p, salary: terms.aav, yearsLeft: terms.years, asking: undefined, fromTeamId: undefined });
+    team.roster = E.sortRoster(team.roster);
+    E.recomputeRatings(team);
+    state.freeAgents = state.freeAgents.filter((x) => x.id !== id);
+    faSignId = null;
+    E.save(state);
+    refreshMeta();
+    renderOffseason();
+    toast(`Signed ${p.n} · ${terms.years}y / ${E.money(terms.aav)}`);
   }
 
   function beginDraft() {
     const rng = E.mulberry32(E.hashSeed(state.rngSeed + ":draft" + state.year));
-    state.draft = {
-      order: E.draftOrder(state),
-      pool: E.generateDraftClass(state.year + 1, rng),
-      pickIndex: 0,
-      picksTotal: 32 * 3,
-      log: []
-    };
+    state.draft = E.initDraftState(state, rng, 3);
+    draftTradeMy = null;
+    draftTradeTheir = null;
+  }
+
+  function renderDraftStep(btn) {
+    if (!state.draft) beginDraft();
+    // migrate old draft saves without picks/stage
+    if (!state.draft.picks) {
+      beginDraft();
+    }
+    const d = state.draft;
+    const body = $("#osBody");
+
+    if (d.stage === "preview") {
+      let html = capacityBanner("Browse the board, trade picks, then start the draft.");
+      html += `<div class="card"><h3>Draft preview · ${d.rounds} rounds</h3>
+        <p class="muted small">Your picks are highlighted. Trade up/down before the show starts.</p>`;
+      html += draftPicksStrip(d);
+      html += draftTradePanel(d);
+      html += `<div class="actions" style="margin-top:12px">
+        <button type="button" class="btn btn-primary" id="btnStartDraft">Start draft show</button>
+      </div></div>`;
+      html += prospectBoardHtml(d, 60, false);
+      body.innerHTML = html;
+      btn.textContent = "Start draft show";
+      wireDraftTrade(body);
+      const start = $("#btnStartDraft");
+      if (start) start.addEventListener("click", () => {
+        d.stage = "live";
+        E.save(state);
+        renderOffseason();
+      });
+      return;
+    }
+
+    if (d.pickIndex >= d.picksTotal) {
+      d.stage = "done";
+      let html = `<div class="card"><h3>Draft complete</h3>
+        <p class="muted">${d.rounds} rounds in the books. Review the board, then run progression.</p>`;
+      html += draftLogHtml(d, 40);
+      html += `</div>`;
+      body.innerHTML = html;
+      btn.textContent = "Run progression";
+      return;
+    }
+
+    const slot = E.currentDraftSlot(d);
+    const onClock = slot.ownerId;
+    const mine = onClock === state.userTeamId;
+    let html = capacityBanner(`Round ${slot.round}, pick ${slot.pickInRound} (overall #${slot.overall})`);
+    html += `<div class="card draft-clock">
+      <div class="eyebrow">On the clock</div>
+      <strong>${escapeHtml(teamName(onClock))}</strong>
+      <div class="muted small">R${slot.round} · Pick ${slot.pickInRound} · Overall ${slot.overall}
+        ${slot.originalTeamId !== slot.ownerId ? ` · via ${escapeHtml(teamLabel(slot.originalTeamId))}` : ""}</div>
+    </div>`;
+
+    html += draftPicksStrip(d);
+    html += `<div class="card"><h3>Recent picks</h3>${draftLogHtml(d, 12)}</div>`;
+
+    if (!mine) {
+      const next = d.log.length ? d.log[d.log.length - 1] : null;
+      html += `<div class="card"><p class="muted">Waiting on ${escapeHtml(teamLabel(onClock))}. Reveal picks one at a time, or jump to yours.</p>
+        <div class="actions">
+          <button type="button" class="btn btn-primary" id="btnRevealPick">Reveal next pick</button>
+          <button type="button" class="btn btn-ghost" id="btnSimToMine">Sim to my pick</button>
+        </div></div>`;
+      html += prospectBoardHtml(d, 25, false);
+      body.innerHTML = html;
+      btn.textContent = "Sim to my pick";
+      $("#btnRevealPick").addEventListener("click", () => revealNextPick());
+      $("#btnSimToMine").addEventListener("click", () => simToMyPick());
+      return;
+    }
+
+    html += draftTradePanel(d);
+    html += `<div class="card"><h3>You're on the clock</h3>
+      <p class="muted small">Draft a prospect below, auto-pick best need, or trade this pick away.</p>
+      <div class="actions">
+        <button type="button" class="btn btn-ghost" id="btnAutoPick">Auto-pick best need</button>
+      </div></div>`;
+    html += prospectBoardHtml(d, 40, true);
+    body.innerHTML = html;
+    btn.textContent = "Auto-pick best need";
+    wireDraftTrade(body);
+    const auto = $("#btnAutoPick");
+    if (auto) auto.addEventListener("click", () => autoPickUser());
+    body.querySelectorAll("[data-draft]").forEach((b) => b.addEventListener("click", () => {
+      draftPlayer(+b.dataset.draft);
+    }));
+  }
+
+  function draftPicksStrip(d) {
+    const uid = state.userTeamId;
+    const upcoming = d.picks.filter((p) => p.overall > d.pickIndex).slice(0, 16);
+    let html = `<div class="card"><h3>Upcoming picks</h3><div class="pick-strip">`;
+    for (const p of upcoming) {
+      const mine = p.ownerId === uid;
+      html += `<div class="pick-chip ${mine ? "mine" : ""}" title="${escapeHtml(teamName(p.ownerId))}">
+        <span class="pk">#${p.overall}</span>
+        <span class="tm">${escapeHtml(teamLabel(p.ownerId))}</span>
+      </div>`;
+    }
+    html += `</div>`;
+    const mine = d.picks.filter((p) => p.ownerId === uid && !p.playerId && p.overall > d.pickIndex);
+    html += `<p class="muted small" style="margin-top:8px">Your remaining picks: ${mine.map((p) => `#${p.overall} (R${p.round})`).join(", ") || "none"}</p></div>`;
+    return html;
+  }
+
+  function draftLogHtml(d, n) {
+    const rows = d.log.slice(-n).reverse();
+    if (!rows.length) return `<p class="muted small">No picks yet.</p>`;
+    let html = `<div class="draft-log">`;
+    for (const e of rows) {
+      const p = e.player;
+      html += `<div class="draft-log-row">
+        <span class="pk">#${e.pick}</span>
+        <span class="tm">${escapeHtml(teamLabel(e.teamId))}</span>
+        <span class="pl"><strong>${escapeHtml(p.n)}</strong> ${escapeHtml(p.pos)} ${ovrBadge(p.ovr)}</span>
+      </div>`;
+    }
+    html += `</div>`;
+    return html;
+  }
+
+  function prospectBoardHtml(d, limit, canDraft) {
+    let html = `<div class="card"><h3>Prospect board</h3>
+      <p class="muted small">Top available by overall.</p>`;
+    const board = d.pool.slice(0, limit);
+    for (const p of board) {
+      html += `<div class="list-actions" style="padding:8px 0;border-top:1px solid var(--line)">
+        <div><strong>#${p.draftRank}</strong> ${escapeHtml(p.n)} · ${escapeHtml(p.pos)} ${ovrBadge(p.ovr)} · age ${p.age}
+          <div class="muted small">${escapeHtml(p.bucket)}</div></div>
+        ${canDraft ? `<button type="button" class="btn btn-sm btn-primary" data-draft="${p.id}">Draft</button>` : `<span class="muted small">Available</span>`}
+      </div>`;
+    }
+    html += `</div>`;
+    return html;
+  }
+
+  function draftTradePanel(d) {
+    const uid = state.userTeamId;
+    const myPicks = d.picks.filter((p) => p.ownerId === uid && !p.playerId && p.overall > d.pickIndex);
+    const theirPicks = d.picks.filter((p) => p.ownerId !== uid && !p.playerId && p.overall > d.pickIndex).slice(0, 48);
+    let html = `<div class="card"><h3>Trade picks</h3>
+      <p class="muted small">Swap one of your picks for another team’s pick (1-for-1).</p>
+      <div class="trade-grid">
+        <label>Your pick<select id="tradeMy"><option value="">—</option>`;
+    for (const p of myPicks) {
+      const sel = draftTradeMy === p.overall ? " selected" : "";
+      html += `<option value="${p.overall}"${sel}>#${p.overall} R${p.round} (was ${escapeHtml(teamLabel(p.originalTeamId))})</option>`;
+    }
+    html += `</select></label><label>Their pick<select id="tradeTheir"><option value="">—</option>`;
+    for (const p of theirPicks) {
+      const sel = draftTradeTheir === p.overall ? " selected" : "";
+      html += `<option value="${p.overall}"${sel}>#${p.overall} R${p.round} · ${escapeHtml(teamLabel(p.ownerId))}</option>`;
+    }
+    html += `</select></label></div>
+      <div class="actions"><button type="button" class="btn btn-sm btn-primary" id="btnDoTrade">Confirm trade</button></div>
+    </div>`;
+    return html;
+  }
+
+  function wireDraftTrade(body) {
+    const my = $("#tradeMy");
+    const their = $("#tradeTheir");
+    if (my) my.addEventListener("change", () => { draftTradeMy = +my.value || null; });
+    if (their) their.addEventListener("change", () => { draftTradeTheir = +their.value || null; });
+    const btn = $("#btnDoTrade");
+    if (btn) btn.addEventListener("click", () => {
+      const a = +($("#tradeMy") && $("#tradeMy").value);
+      const b = +($("#tradeTheir") && $("#tradeTheir").value);
+      if (!a || !b) return toast("Pick both sides of the trade");
+      const err = E.tradeDraftPicks(state, a, b);
+      if (err) return toast(err);
+      draftTradeMy = null;
+      draftTradeTheir = null;
+      E.save(state);
+      renderOffseason();
+      toast(`Traded #${a} for #${b}`);
+    });
+  }
+
+  function revealNextPick() {
+    const rng = E.mulberry32(E.hashSeed(state.rngSeed + ":d" + state.draft.pickIndex));
+    const entry = E.cpuDraftOnePick(state, rng);
+    E.save(state);
+    renderOffseason();
+    if (entry) toast(`${teamLabel(entry.teamId)} select ${entry.player.n} (${entry.player.pos} ${entry.player.ovr})`);
+  }
+
+  function simToMyPick() {
+    const rng = E.mulberry32(E.hashSeed(state.rngSeed + ":d" + state.draft.pickIndex));
     E.runCpuDraftPicks(state, rng, true);
+    E.save(state);
+    renderOffseason();
+    toast("On the clock" );
+  }
+
+  function autoPickUser() {
+    const d = state.draft;
+    const needs = E.rosterNeeds(E.userTeam(state).roster).gaps.map((g) => g.bucket);
+    let pick = needs.length ? d.pool.find((p) => needs.includes(p.bucket)) : null;
+    if (!pick) pick = d.pool[0];
+    if (pick) draftPlayer(pick.id);
+  }
+
+  function renderProgressStep(btn) {
+    const body = $("#osBody");
+    const log = state.offseasonLog || [];
+    let html = `<div class="card"><h3>Offseason progression</h3>
+      <p class="muted small">Young players (≤28) improve · older players (31+) regress · some retire.</p>`;
+    const mine = log.filter((x) => x.teamId === state.userTeamId);
+    if (!mine.length) html += `<p class="muted">No notable changes on your roster.</p>`;
+    for (const x of mine.slice(0, 40)) {
+      if (x.retired) html += `<div class="muted small">${escapeHtml(x.name)} retired (age ${x.age}, OVR ${x.ovr})</div>`;
+      else html += `<div class="muted small">${escapeHtml(x.name)}: ${x.before} → <strong>${x.after}</strong> (age ${x.age})</div>`;
+    }
+    html += `</div>`;
+    body.innerHTML = html;
+    btn.textContent = `Start ${state.year + 1} season`;
   }
 
   function advanceOffseason() {
@@ -783,9 +1202,10 @@
     const step = state.offseasonStep || "resign";
     try {
       if (step === "resign") {
-        // Let remaining unsigned user FAs stay in pool; CPU already resigned theirs
         E.cpuFreeAgency(state, E.mulberry32(E.hashSeed(state.rngSeed + ":fa" + state.year)));
         state.offseasonStep = "fa";
+        faSignId = null;
+        osTab = "step";
         E.save(state);
         renderOffseason();
         toast(`Free agency open · ${(state.freeAgents || []).length} players`);
@@ -794,39 +1214,45 @@
       if (step === "fa") {
         beginDraft();
         state.offseasonStep = "draft";
+        osTab = "step";
         E.save(state);
         renderOffseason();
+        toast("Draft board is open — trade or start the show");
         return;
       }
       if (step === "draft") {
         const d = state.draft;
         if (!d) { beginDraft(); E.save(state); renderOffseason(); return; }
+        if (d.stage === "preview") {
+          d.stage = "live";
+          E.save(state);
+          renderOffseason();
+          return;
+        }
         if (d.pickIndex >= d.picksTotal) {
           const rng = E.mulberry32(E.hashSeed(state.rngSeed + ":age" + state.year));
           state.offseasonLog = E.ageAndProgress(state, rng);
           state.offseasonStep = "progress";
+          osTab = "step";
           E.save(state);
           renderOffseason();
           return;
         }
-        if (d.order[d.pickIndex % 32] !== state.userTeamId) {
-          E.runCpuDraftPicks(state, E.mulberry32(E.hashSeed(state.rngSeed + ":d" + d.pickIndex)), true);
-          E.save(state);
-          renderOffseason();
+        if (!E.userOwnsCurrentPick(state)) {
+          simToMyPick();
           return;
         }
-        // Auto-pick best need
-        const needs = E.rosterNeeds(E.userTeam(state)).gaps.map((g) => g.bucket);
-        let pick = needs.length ? d.pool.find((p) => needs.includes(p.bucket)) : null;
-        if (!pick) pick = d.pool[0];
-        if (pick) draftPlayer(pick.id);
+        autoPickUser();
         return;
       }
       if (step === "progress") {
         E.startNextSeason(state);
         delete state._expiredReady;
         delete state._userExpired;
-        // keep _contractsYear as prior year so next offseason reticks
+        delete state._resignYears;
+        delete state._faYears;
+        faSignId = null;
+        resignSignId = null;
         E.save(state);
         show("season");
         activeTab = "schedule";
@@ -842,31 +1268,37 @@
 
   function draftPlayer(pid) {
     const d = state.draft;
+    if (!d || d.stage === "preview") return toast("Start the draft first");
+    if (!E.userOwnsCurrentPick(state)) return toast("Not your pick");
     const p = d.pool.find((x) => x.id === pid);
     if (!p) return;
     const team = E.userTeam(state);
-    const maxCount = state.rosterLimit || E.ROSTER_LIMIT || 53;
-    // If full at bucket, still allow but cut lowest ovr same bucket backup if needed
-    const have = team.roster.filter((x) => x.bucket === p.bucket);
-    const need = (E.STARTER_NEEDS[p.bucket] || 0) + (E.BACKUP_NEEDS[p.bucket] || 0);
-    if (have.length >= need) {
-      const cut = have.slice().sort((a, b) => a.ovr - b.ovr)[0];
-      team.roster = team.roster.filter((x) => x.id !== cut.id);
-      state.freeAgents.push({ ...cut, asking: Math.round(cut.salary * 1.05 / 50000) * 50000, yearsLeft: 0 });
-      toast(`Cut ${cut.n} to make room`);
-    } else if (team.roster.length >= maxCount) {
-      return toast("Roster full");
+    if (team.roster.length >= rosterLimit()) {
+      // auto-cut lowest same-bucket or overall lowest
+      const cut = E.ensureRosterRoom(state, team, 1);
+      if (cut) toast(`Cut ${cut.n} to make room`);
+      if (team.roster.length >= rosterLimit()) {
+        osTab = "roster";
+        renderOffseason();
+        return toast("Roster full — cut someone first");
+      }
     }
-    const sal = Math.min(E.salaryFor(p.ovr, p.age, p.exp || 0), 6500000);
-    team.roster.push({ ...p, salary: sal, yearsLeft: 4 });
-    team.roster = E.sortRoster(team.roster);
-    E.recomputeRatings(team);
+    const slot = E.currentDraftSlot(d);
+    E.assignDraftPick(state, team.id, p);
     d.pool = d.pool.filter((x) => x.id !== pid);
-    d.log.push({ pick: d.pickIndex + 1, teamId: team.id, player: p });
+    slot.playerId = p.id;
+    d.log.push({
+      pick: slot.overall,
+      round: slot.round,
+      pickInRound: slot.pickInRound,
+      teamId: team.id,
+      originalTeamId: slot.originalTeamId,
+      player: { id: p.id, n: p.n, pos: p.pos, ovr: p.ovr, bucket: p.bucket, draftRank: p.draftRank }
+    });
     d.pickIndex++;
-    E.runCpuDraftPicks(state, E.mulberry32(E.hashSeed(state.rngSeed + ":d" + d.pickIndex)), true);
     E.save(state);
     renderOffseason();
+    toast(`Drafted ${p.n}`);
   }
 
   /* -------- Boot -------- */
@@ -892,7 +1324,11 @@
       show("mode");
       toast("Dynasty cleared");
     });
-    $$(".tab").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
+    $$("#view-season .tab").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
+    $$("#osTabs .tab").forEach((b) => b.addEventListener("click", () => {
+      osTab = b.dataset.osTab;
+      renderOffseason();
+    }));
 
     const res = await fetch("data/league.json");
     league = await res.json();

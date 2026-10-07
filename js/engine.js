@@ -2,7 +2,7 @@
 (function (global) {
   "use strict";
 
-  const SAVE_KEY = "nfl-dynasty-v4";
+  const SAVE_KEY = "nfl-dynasty-v5";
   const STARTER_NEEDS = { QB: 1, RB: 1, WR: 3, TE: 1, OL: 5, EDGE: 2, DL: 2, LB: 3, DB: 4, K: 1, P: 1 };
   const BACKUP_NEEDS = { QB: 2, RB: 3, WR: 3, TE: 2, OL: 4, EDGE: 2, DL: 3, LB: 3, DB: 6, K: 0, P: 0, LS: 1 };
   const BUCKET_ORDER = ["QB", "RB", "WR", "TE", "OL", "EDGE", "DL", "LB", "DB", "K", "P", "LS"];
@@ -75,6 +75,59 @@
     if (ovr >= 82) return 4;
     if (ovr >= 74) return 3;
     return 2;
+  }
+
+  /** Allowed contract lengths for a player (user-selectable). */
+  function yearOptionsFor(p) {
+    const age = p.age || 25;
+    if (age >= 36) return [1];
+    if (age >= 34) return [1, 2];
+    if (age >= 31) return [1, 2, 3];
+    return [1, 2, 3, 4, 5];
+  }
+
+  /**
+   * AAV / total for a chosen length. Longer deals slightly cheaper AAV; shorter cost more.
+   * baseAsking defaults to asking or salaryFor.
+   */
+  function contractTerms(p, years) {
+    const suggested = contractYears(p.ovr, p.age);
+    const opts = yearOptionsFor(p);
+    const y = clamp(years | 0, opts[0], opts[opts.length - 1]);
+    const base = p.asking || p.salary || salaryFor(p.ovr, p.age, p.exp);
+    const delta = y - suggested;
+    let aav = Math.round(base * (1 - delta * 0.045) / 50000) * 50000;
+    aav = Math.max(500000, aav);
+    return { years: y, aav, total: aav * y, suggested };
+  }
+
+  function releasePlayer(state, teamId, playerId, toFA) {
+    const team = state.teamsById[teamId];
+    if (!team) return null;
+    const idx = team.roster.findIndex((x) => x.id === playerId);
+    if (idx < 0) return null;
+    const p = team.roster[idx];
+    team.roster.splice(idx, 1);
+    team.roster = sortRoster(team.roster);
+    recomputeRatings(team);
+    if (toFA) {
+      const asking = Math.round(salaryFor(p.ovr, p.age, p.exp) * 1.05 / 50000) * 50000;
+      state.freeAgents = state.freeAgents || [];
+      state.freeAgents.push({ ...p, yearsLeft: 0, asking, fromTeamId: teamId });
+      state.freeAgents.sort((a, b) => b.ovr - a.ovr);
+    }
+    return p;
+  }
+
+  function ensureRosterRoom(state, team, need = 1) {
+    const limit = state.rosterLimit || ROSTER_LIMIT;
+    let cut = null;
+    while (team.roster.length + need > limit) {
+      const lowest = team.roster.slice().sort((a, b) => a.ovr - b.ovr || a.salary - b.salary)[0];
+      if (!lowest) break;
+      cut = releasePlayer(state, team.id, lowest.id, true);
+    }
+    return cut;
   }
 
   function teamCapHit(team) {
@@ -570,17 +623,17 @@
   }
 
   function cpuResign(state, rng) {
+    const limit = state.rosterLimit || ROSTER_LIMIT;
     for (const team of state.teams) {
       if (team.id === state.userTeamId) continue;
       const room = state.salaryCap - teamCapHit(team);
-      // soft resign of own expired still in FA list from this team
       const mine = state.freeAgents.filter((p) => p.fromTeamId === team.id && p.ovr >= 74);
       for (const p of mine.slice(0, 4)) {
+        if (team.roster.length >= limit) break;
         const years = contractYears(p.ovr, p.age);
         const sal = Math.round((p.asking || salaryFor(p.ovr, p.age, p.exp)) * (0.92 + rng() * 0.1) / 50000) * 50000;
         if (sal * 1 > room * 0.35 && p.ovr < 88) continue;
         if (teamCapHit(team) + sal > state.salaryCap) continue;
-        // sign
         state.freeAgents = state.freeAgents.filter((x) => x.id !== p.id);
         team.roster.push({ ...p, yearsLeft: years, salary: sal, asking: undefined, fromTeamId: undefined });
         team.roster = sortRoster(team.roster);
@@ -590,9 +643,11 @@
   }
 
   function cpuFreeAgency(state, rng) {
+    const limit = state.rosterLimit || ROSTER_LIMIT;
     for (let round = 0; round < 3; round++) {
       for (const team of state.teams) {
         if (team.id === state.userTeamId) continue;
+        if (team.roster.length >= limit) continue;
         const needs = rosterNeeds(team.roster).gaps;
         if (!needs.length) continue;
         const bucket = needs[0].bucket;
@@ -642,32 +697,124 @@
   }
 
   function draftOrder(state) {
-    // worst record first (simple reverse standings), then playoff teams by reverse finish approx
+    // worst record first (simple reverse standings)
     const list = standingsList(state, null).slice().reverse();
     return list.map((t) => t.id);
   }
 
-  function runCpuDraftPicks(state, rng, untilUser) {
-    const order = state.draft.order;
-    while (state.draft.pickIndex < state.draft.picksTotal) {
-      const slot = state.draft.pickIndex;
-      const teamId = order[slot % 32];
-      if (untilUser && teamId === state.userTeamId) return; // stop for user
-      const team = state.teamsById[teamId];
-      const needs = rosterNeeds(team.roster).gaps.map((g) => g.bucket);
-      let pick = null;
-      if (needs.length) pick = state.draft.pool.find((p) => needs.includes(p.bucket));
-      if (!pick) pick = state.draft.pool[0];
-      if (!pick) break;
-      state.draft.pool = state.draft.pool.filter((p) => p.id !== pick.id);
-      const sal = Math.min(salaryFor(pick.ovr, pick.age, pick.exp || 0), 6_500_000);
-      team.roster.push({ ...pick, salary: sal, yearsLeft: 4 });
-      team.roster = sortRoster(team.roster);
-      recomputeRatings(team);
-      state.draft.log.push({ pick: slot + 1, teamId, player: pick });
-      state.draft.pickIndex++;
-      if (untilUser && order[state.draft.pickIndex % 32] === state.userTeamId) return;
+  function buildDraftSlots(state, rounds) {
+    const order = draftOrder(state);
+    const picks = [];
+    const R = rounds || 3;
+    for (let round = 1; round <= R; round++) {
+      for (let i = 0; i < 32; i++) {
+        picks.push({
+          overall: (round - 1) * 32 + i + 1,
+          round,
+          pickInRound: i + 1,
+          originalTeamId: order[i],
+          ownerId: order[i],
+          playerId: null
+        });
+      }
     }
+    return { order, picks };
+  }
+
+  function currentDraftSlot(draft) {
+    if (!draft || !draft.picks) return null;
+    return draft.picks[draft.pickIndex] || null;
+  }
+
+  function userOwnsCurrentPick(state) {
+    const slot = currentDraftSlot(state.draft);
+    return !!(slot && slot.ownerId === state.userTeamId);
+  }
+
+  /** Swap ownership of two unpicked slots. Returns error string or null. */
+  function tradeDraftPicks(state, myOverall, theirOverall) {
+    const d = state.draft;
+    if (!d || d.stage === "done") return "Draft not open";
+    const a = d.picks.find((p) => p.overall === myOverall);
+    const b = d.picks.find((p) => p.overall === theirOverall);
+    if (!a || !b) return "Pick not found";
+    if (a.playerId || b.playerId) return "Can't trade a used pick";
+    if (a.overall <= d.pickIndex || b.overall <= d.pickIndex) return "Pick already passed";
+    if (a.ownerId !== state.userTeamId) return "You don't own that pick";
+    if (b.ownerId === state.userTeamId) return "That's already your pick";
+    const tmp = a.ownerId;
+    a.ownerId = b.ownerId;
+    b.ownerId = tmp;
+    return null;
+  }
+
+  function assignDraftPick(state, teamId, prospect) {
+    const team = state.teamsById[teamId];
+    ensureRosterRoom(state, team, 1);
+    const sal = Math.min(salaryFor(prospect.ovr, prospect.age, prospect.exp || 0), 6_500_000);
+    const player = { ...prospect, salary: sal, yearsLeft: 4 };
+    team.roster.push(player);
+    team.roster = sortRoster(team.roster);
+    recomputeRatings(team);
+    return player;
+  }
+
+  function cpuChooseProspect(state, team, rng) {
+    const needs = rosterNeeds(team.roster).gaps.map((g) => g.bucket);
+    let pick = null;
+    if (needs.length) pick = state.draft.pool.find((p) => needs.includes(p.bucket));
+    if (!pick) pick = state.draft.pool[0];
+    return pick;
+  }
+
+  /** Execute exactly one CPU pick. Returns log entry or null. */
+  function cpuDraftOnePick(state, rng) {
+    const d = state.draft;
+    if (!d || d.pickIndex >= d.picksTotal) return null;
+    const slot = d.picks[d.pickIndex];
+    if (slot.ownerId === state.userTeamId) return null;
+    const team = state.teamsById[slot.ownerId];
+    const pick = cpuChooseProspect(state, team, rng);
+    if (!pick) return null;
+    d.pool = d.pool.filter((p) => p.id !== pick.id);
+    assignDraftPick(state, slot.ownerId, pick);
+    slot.playerId = pick.id;
+    const entry = {
+      pick: slot.overall,
+      round: slot.round,
+      pickInRound: slot.pickInRound,
+      teamId: slot.ownerId,
+      originalTeamId: slot.originalTeamId,
+      player: { id: pick.id, n: pick.n, pos: pick.pos, ovr: pick.ovr, bucket: pick.bucket, draftRank: pick.draftRank }
+    };
+    d.log.push(entry);
+    d.pickIndex++;
+    return entry;
+  }
+
+  function runCpuDraftPicks(state, rng, untilUser) {
+    while (state.draft.pickIndex < state.draft.picksTotal) {
+      const slot = state.draft.picks[state.draft.pickIndex];
+      if (untilUser && slot.ownerId === state.userTeamId) return;
+      const entry = cpuDraftOnePick(state, rng);
+      if (!entry) break;
+      if (untilUser && userOwnsCurrentPick(state)) return;
+    }
+  }
+
+  function initDraftState(state, rng, rounds) {
+    const R = rounds || 3;
+    const built = buildDraftSlots(state, R);
+    return {
+      order: built.order,
+      picks: built.picks,
+      pool: generateDraftClass(state.year + 1, rng),
+      pickIndex: 0,
+      picksTotal: 32 * R,
+      rounds: R,
+      log: [],
+      stage: "preview" // preview | live | done
+    };
   }
 
   /* -------- State bootstrap -------- */
@@ -685,7 +832,7 @@
     const records = {};
     for (const t of teams) records[t.id] = emptyRecord();
     return {
-      version: 4,
+      version: 5,
       year,
       week: 1,
       phase: "regular", // regular | playoffs | recap | offseason
@@ -847,7 +994,9 @@
     createState, userTeam, save, load, clearSave, makeSeasonSchedule, buildScheduleFromTemplate,
     simWeek, latestUserGame, standingsList, divisionWinners,
     tickContracts, ageAndProgress, collectExpired, cpuResign, cpuFreeAgency,
-    generateDraftClass, draftOrder, runCpuDraftPicks, startNextSeason,
-    finalizeSeason
+    generateDraftClass, draftOrder, buildDraftSlots, currentDraftSlot, userOwnsCurrentPick,
+    tradeDraftPicks, assignDraftPick, cpuDraftOnePick, runCpuDraftPicks, initDraftState,
+    yearOptionsFor, contractTerms, releasePlayer, ensureRosterRoom,
+    startNextSeason, finalizeSeason
   };
 })(window);
