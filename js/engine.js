@@ -2,7 +2,7 @@
 (function (global) {
   "use strict";
 
-  const SAVE_KEY = "nfl-dynasty-v2";
+  const SAVE_KEY = "nfl-dynasty-v3";
   const STARTER_NEEDS = { QB: 1, RB: 1, WR: 3, TE: 1, OL: 5, EDGE: 2, DL: 2, LB: 3, DB: 4, K: 1, P: 1 };
   const BACKUP_NEEDS = { QB: 2, RB: 3, WR: 3, TE: 2, OL: 4, EDGE: 2, DL: 3, LB: 3, DB: 6, K: 0, P: 0, LS: 1 };
   const BUCKET_ORDER = ["QB", "RB", "WR", "TE", "OL", "EDGE", "DL", "LB", "DB", "K", "P", "LS"];
@@ -45,8 +45,9 @@
     return FIRST[Math.floor(rng() * FIRST.length)] + " " + LAST[Math.floor(rng() * LAST.length)];
   }
 
-  function salaryFor(ovr, age) {
-    const anchors = [[55,900000],[60,1200000],[65,1800000],[70,2800000],[75,5000000],[80,9500000],[85,15500000],[90,24000000],[93,32000000],[96,40000000],[99,48000000]];
+  function salaryFor(ovr, age, exp) {
+    // Tuned so a typical 53-man sits near/under the $255M cap (rookie deals discounted).
+    const anchors = [[55,850000],[60,1050000],[65,1400000],[70,2000000],[75,3600000],[80,6800000],[85,11000000],[90,16500000],[93,21500000],[96,26500000],[99,32000000]];
     const o = clamp(ovr | 0, 55, 99);
     let base = anchors[anchors.length - 1][1];
     for (let i = 0; i < anchors.length - 1; i++) {
@@ -57,11 +58,13 @@
         break;
       }
     }
-    if (age >= 34) base *= 0.82;
-    else if (age >= 31) base *= 0.92;
-    else if (age <= 23 && ovr < 88) base *= 0.8;
-    // Match league.json scale so generated contracts stay in-universe
-    base *= 0.548;
+    if (age >= 34) base *= 0.8;
+    else if (age >= 31) base *= 0.88;
+    const e = exp == null ? 99 : (exp | 0);
+    if (e <= 3 && ovr < 94) base *= (e <= 1 ? 0.32 : e === 2 ? 0.4 : 0.5);
+    else if (e <= 4 && ovr < 90) base *= 0.58;
+    if (ovr < 70) base = Math.min(base, 1500000);
+    if (ovr < 65) base = Math.min(base, 1100000);
     return Math.round(base / 50000) * 50000;
   }
 
@@ -481,7 +484,7 @@
       const stay = [];
       for (const p of team.roster) {
         if (p.yearsLeft <= 0) {
-          expired.push({ ...p, fromTeamId: team.id, asking: Math.round(salaryFor(p.ovr, p.age) * 1.06 / 50000) * 50000 });
+          expired.push({ ...p, fromTeamId: team.id, asking: Math.round(salaryFor(p.ovr, p.age, p.exp) * 1.06 / 50000) * 50000 });
         } else stay.push(p);
       }
       team.roster = stay;
@@ -500,7 +503,7 @@
       const mine = state.freeAgents.filter((p) => p.fromTeamId === team.id && p.ovr >= 74);
       for (const p of mine.slice(0, 4)) {
         const years = contractYears(p.ovr, p.age);
-        const sal = Math.round((p.asking || salaryFor(p.ovr, p.age)) * (0.92 + rng() * 0.1) / 50000) * 50000;
+        const sal = Math.round((p.asking || salaryFor(p.ovr, p.age, p.exp)) * (0.92 + rng() * 0.1) / 50000) * 50000;
         if (sal * 1 > room * 0.35 && p.ovr < 88) continue;
         if (teamCapHit(team) + sal > state.salaryCap) continue;
         // sign
@@ -557,7 +560,7 @@
         j: String(1 + Math.floor(rng() * 98)),
         ovr, age: 21 + (rng() < 0.15 ? 1 : 0),
         exp: 0, yearsLeft: 4,
-        salary: salaryFor(ovr, 22),
+        salary: salaryFor(ovr, 22, 0),
         draftRank: i + 1
       });
     }
@@ -583,7 +586,7 @@
       if (!pick) pick = state.draft.pool[0];
       if (!pick) break;
       state.draft.pool = state.draft.pool.filter((p) => p.id !== pick.id);
-      const sal = Math.min(salaryFor(pick.ovr, pick.age), 6_500_000);
+      const sal = Math.min(salaryFor(pick.ovr, pick.age, pick.exp || 0), 6_500_000);
       team.roster.push({ ...pick, salary: sal, yearsLeft: 4 });
       team.roster = sortRoster(team.roster);
       recomputeRatings(team);

@@ -39,6 +39,7 @@ a { color: inherit; }
 .chip {
   background: var(--panel2); border: 1px solid var(--line);
   border-radius: 999px; padding: 4px 8px; font-size: 11px; color: var(--muted);
+  flex-shrink: 0;
 }
 .chip strong { color: var(--text); }
 
@@ -173,46 +174,76 @@ main { max-width: 1100px; margin: 0 auto; padding: 18px 16px 48px; }
   .game-row .score { grid-column: 2; }
 }
 
-/* Tiny plain-text cap / year in the top bar (not a pill) */
-.cap-text {
-  display: inline;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  background: none;
-  border-radius: 0;
+/* Compact polished cap chip — single-line, not a tall pill */
+.chip-cap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  padding: 4px 10px;
+  line-height: 1.15;
   font-size: 12px;
-  line-height: 1.2;
-  font-weight: 500;
-  color: var(--muted);
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100%;
+  max-width: none;
 }
-.cap-text.is-over { color: var(--danger); }
-.year-text {
-  display: inline;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  background: none;
-  font-size: 11px;
-  line-height: 1.2;
+.chip-cap .cap-label {
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  font-size: 10px;
   color: var(--muted);
+  font-weight: 600;
+}
+.chip-cap .cap-figures {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.chip-cap .cap-sep { color: var(--muted); margin: 0 1px; }
+.chip-cap .cap-room { color: var(--accent2); font-weight: 600; font-variant-numeric: tabular-nums; }
+.chip-cap .cap-over { color: var(--danger); font-weight: 600; font-variant-numeric: tabular-nums; }
+.chip-cap.is-over { border-color: rgba(240,113,120,.45); }
+.chip-year {
   white-space: nowrap;
-  opacity: .85;
-  flex-shrink: 0;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.topbar-meta {
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 @media (max-width: 640px) {
   .brand-sub { display: none; }
   .brand-mark { width: 28px; height: 28px; font-size: 10px; }
   .brand-title { font-size: 14px; }
-  .cap-text { font-size: 11px; }
-  .year-text { font-size: 10px; }
+  .chip-cap { padding: 3px 8px; font-size: 11px; gap: 5px; }
+  .chip-cap .cap-label { font-size: 9px; }
+  .chip-year { padding: 3px 7px; font-size: 10px; }
   .topbar-actions .btn { padding: 4px 8px; font-size: 12px; }
 }
+
+/* Roster grouped by position */
+.roster-toolbar {
+  display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  align-items: end; margin-bottom: 12px;
+}
+.roster-filter { display: flex; flex-direction: column; gap: 4px; min-width: 160px; }
+.roster-filter select {
+  background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+  border-radius: 10px; padding: 8px 10px;
+}
+.pos-group { margin-top: 10px; }
+.pos-group-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 8px; padding: 6px 2px 4px;
+  border-bottom: 1px solid var(--line); margin-bottom: 4px;
+}
+.pos-group-head strong {
+  font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--accent);
+}
+.roster-card .table { margin: 0; }
 
 .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .table.sortable th[data-sort] { user-select: none; }

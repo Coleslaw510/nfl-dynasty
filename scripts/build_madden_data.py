@@ -176,18 +176,36 @@ def estimate_age(exp: int, pos: str) -> int:
     return max(21, min(44, base))
 
 
-def salary_for(ovr: int, age: int, years: int) -> int:
-    base = 800_000 + max(0, ovr - 55) ** 2 * 14_000
-    if ovr >= 90:
-        base += (ovr - 89) * 1_500_000
-    if ovr >= 95:
-        base += (ovr - 94) * 2_000_000
-    if age >= 32:
-        base = int(base * 0.92)
-    # Backups / low OVR stay near veterans minimum
+def salary_for(ovr: int, age: int, years: int, exp: int | None = None) -> int:
+    """Simplified dynasty AAV. Tuned so a typical 53-man sits near/under $255M."""
+    anchors = [
+        (55, 850_000), (60, 1_050_000), (65, 1_400_000), (70, 2_000_000),
+        (75, 3_600_000), (80, 6_800_000), (85, 11_000_000), (90, 16_500_000),
+        (93, 21_500_000), (96, 26_500_000), (99, 32_000_000),
+    ]
+    o = max(55, min(99, int(ovr)))
+    base = anchors[-1][1]
+    for i in range(len(anchors) - 1):
+        a0, s0 = anchors[i]
+        a1, s1 = anchors[i + 1]
+        if a0 <= o <= a1:
+            t = 0 if a1 == a0 else (o - a0) / (a1 - a0)
+            base = s0 + (s1 - s0) * t
+            break
+    if age >= 34:
+        base *= 0.8
+    elif age >= 31:
+        base *= 0.88
+    e = 99 if exp is None else int(exp)
+    if e <= 3 and ovr < 94:
+        base *= 0.32 if e <= 1 else (0.4 if e == 2 else 0.5)
+    elif e <= 4 and ovr < 90:
+        base *= 0.58
     if ovr < 70:
-        base = min(base, 1_800_000)
-    return int(round(base / 10_000) * 10_000)
+        base = min(base, 1_500_000)
+    if ovr < 65:
+        base = min(base, 1_100_000)
+    return int(round(base / 50_000) * 50_000)
 
 
 def contract_years(ovr: int, age: int) -> int:
@@ -219,7 +237,7 @@ def player_row(p: dict, bucket: str) -> dict:
         "age": age,
         "exp": exp,
         "yearsLeft": years,
-        "salary": salary_for(ovr, age, years),
+        "salary": salary_for(ovr, age, years, exp),
         "spd": int(p.get("SPD") or 0) or None,
     }
 
@@ -402,7 +420,7 @@ def main():
         "sourceLabel": "TeamCrafters Madden 27 · 10/1/26 Update (EA Madden ratings)",
         "rosterVersion": VERSION,
         "fetchedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "salaryCap": 279_200_000,
+        "salaryCap": 255_000_000,
         "seasonYear": 2026,
         "regularWeeks": 18,
         "rosterLimit": 53,

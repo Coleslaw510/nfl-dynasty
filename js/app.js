@@ -52,12 +52,13 @@
     if (!state) return;
     const hit = E.teamCapHit(E.userTeam(state));
     const room = state.salaryCap - hit;
-    const roomWord = room < 0 ? "over" : "left";
-    const roomAmt = moneyShort(Math.abs(room));
-    const el = $("#capChip");
-    el.textContent = `Cap ${moneyShort(hit)} · ${roomAmt} ${roomWord}`;
-    el.classList.toggle("is-over", room < 0);
-    $("#yearChip").textContent = String(state.year);
+    const roomCls = room < 0 ? "cap-over" : "cap-room";
+    const chip = $("#capChip");
+    chip.className = "chip chip-cap" + (room < 0 ? " is-over" : "");
+    chip.innerHTML = `<span class="cap-label">Cap</span><span class="cap-figures"><strong>${moneyShort(hit)}</strong><span class="cap-sep">/</span>${moneyShort(state.salaryCap)}</span><span class="${roomCls}">${room < 0 ? "" : "+"}${moneyShort(room)}</span>`;
+    const year = $("#yearChip");
+    year.className = "chip chip-year";
+    year.textContent = String(state.year);
   }
 
   function renderTeamChip(el) {
@@ -250,58 +251,119 @@
     if (inline) inline.addEventListener("click", onPrimary);
   }
 
-  let rosterSort = { key: "pos", dir: 1 };
+  let rosterSort = { key: "ovr", dir: -1 };
+  let rosterFilter = "ALL"; // ALL | bucket code | POS:XX
 
-  function renderRoster() {
-    const t = E.userTeam(state);
-    const panel = $("#panel-roster");
-    const limit = state.rosterLimit || E.ROSTER_LIMIT || 53;
-    const sorted = t.roster.slice().sort((a, b) => {
-      const k = rosterSort.key;
-      const dir = rosterSort.dir;
+  function playerRowHtml(p) {
+    return `<tr>
+      <td>${p.pos}</td>
+      <td>${p.n}${p.j ? ` <span class="muted small">#${p.j}</span>` : ""}</td>
+      <td>${ovrBadge(p.ovr)}</td>
+      <td>${p.age}</td>
+      <td>${p.yearsLeft}</td>
+      <td>${E.money(p.salary)}</td>
+    </tr>`;
+  }
+
+  function sortPlayers(list) {
+    const k = rosterSort.key;
+    const dir = rosterSort.dir;
+    return list.slice().sort((a, b) => {
       if (k === "pos") {
         const bi = (p) => E.BUCKET_ORDER.indexOf(p.bucket);
-        const d = bi(a) - bi(b) || b.ovr - a.ovr || a.n.localeCompare(b.n);
-        return dir * d;
+        return dir * (bi(a) - bi(b) || b.ovr - a.ovr || a.n.localeCompare(b.n));
       }
       if (k === "n") return dir * a.n.localeCompare(b.n);
       if (k === "ovr") return dir * (a.ovr - b.ovr) || a.n.localeCompare(b.n);
       if (k === "age") return dir * (a.age - b.age) || b.ovr - a.ovr;
       if (k === "yearsLeft") return dir * (a.yearsLeft - b.yearsLeft) || b.ovr - a.ovr;
       if (k === "salary") return dir * (a.salary - b.salary) || b.ovr - a.ovr;
-      return 0;
+      return b.ovr - a.ovr;
     });
-    const mark = (key) => rosterSort.key === key ? (rosterSort.dir > 0 ? " ▲" : " ▼") : "";
-    let html = `<div class="card"><h3>Roster · ${t.roster.length}/${limit}</h3>
-      <p class="muted small">Full 53-man roster. Tap a column to sort.</p>
-      <div class="table-wrap"><table class="table sortable"><thead><tr>
-        <th data-sort="pos">Pos${mark("pos")}</th>
-        <th data-sort="n">Player${mark("n")}</th>
-        <th data-sort="ovr">OVR${mark("ovr")}</th>
-        <th data-sort="age">Age${mark("age")}</th>
-        <th data-sort="yearsLeft">Yrs${mark("yearsLeft")}</th>
-        <th data-sort="salary">Salary${mark("salary")}</th>
-      </tr></thead><tbody>`;
-    for (const p of sorted) {
-      html += `<tr>
-        <td>${p.pos}</td>
-        <td>${p.n}${p.j ? ` <span class="muted small">#${p.j}</span>` : ""}</td>
-        <td>${ovrBadge(p.ovr)}</td>
-        <td>${p.age}</td>
-        <td>${p.yearsLeft}</td>
-        <td>${E.money(p.salary)}</td>
-      </tr>`;
+  }
+
+  function renderRoster() {
+    const t = E.userTeam(state);
+    const panel = $("#panel-roster");
+    const limit = state.rosterLimit || E.ROSTER_LIMIT || 53;
+    const positions = [...new Set(t.roster.map((p) => p.pos))].sort((a, b) => a.localeCompare(b));
+    const bucketsPresent = E.BUCKET_ORDER.filter((b) => t.roster.some((p) => p.bucket === b));
+
+    let filtered = t.roster;
+    if (rosterFilter.startsWith("POS:")) {
+      const pos = rosterFilter.slice(4);
+      filtered = t.roster.filter((p) => p.pos === pos);
+    } else if (rosterFilter !== "ALL") {
+      filtered = t.roster.filter((p) => p.bucket === rosterFilter);
     }
-    html += `</tbody></table></div></div>`;
+
+    const mark = (key) => rosterSort.key === key ? (rosterSort.dir > 0 ? " ▲" : " ▼") : "";
+    const th = () => `<thead><tr>
+      <th data-sort="pos">Pos${mark("pos")}</th>
+      <th data-sort="n">Player${mark("n")}</th>
+      <th data-sort="ovr">OVR${mark("ovr")}</th>
+      <th data-sort="age">Age${mark("age")}</th>
+      <th data-sort="yearsLeft">Yrs${mark("yearsLeft")}</th>
+      <th data-sort="salary">Salary${mark("salary")}</th>
+    </tr></thead>`;
+
+    let html = `<div class="card roster-card">
+      <div class="roster-toolbar">
+        <div>
+          <h3 style="margin:0">Roster · ${t.roster.length}/${limit}</h3>
+          <p class="muted small" style="margin:4px 0 0">Grouped by position. Filter with the dropdown.</p>
+        </div>
+        <label class="roster-filter">
+          <span class="muted small">Position</span>
+          <select id="rosterPosFilter">
+            <option value="ALL"${rosterFilter === "ALL" ? " selected" : ""}>All groups</option>
+            <optgroup label="Groups">
+              ${bucketsPresent.map((b) => `<option value="${b}"${rosterFilter === b ? " selected" : ""}>${b}</option>`).join("")}
+            </optgroup>
+            <optgroup label="Exact position">
+              ${positions.map((p) => `<option value="POS:${p}"${rosterFilter === "POS:" + p ? " selected" : ""}>${p}</option>`).join("")}
+            </optgroup>
+          </select>
+        </label>
+      </div>`;
+
+    if (rosterFilter === "ALL") {
+      for (const bucket of bucketsPresent) {
+        const group = sortPlayers(filtered.filter((p) => p.bucket === bucket));
+        if (!group.length) continue;
+        html += `<div class="pos-group">
+          <div class="pos-group-head"><strong>${bucket}</strong><span class="muted small">${group.length}</span></div>
+          <div class="table-wrap"><table class="table sortable">${th()}<tbody>`;
+        for (const p of group) html += playerRowHtml(p);
+        html += `</tbody></table></div></div>`;
+      }
+    } else {
+      const group = sortPlayers(filtered);
+      const label = rosterFilter.startsWith("POS:") ? rosterFilter.slice(4) : rosterFilter;
+      html += `<div class="pos-group">
+        <div class="pos-group-head"><strong>${label}</strong><span class="muted small">${group.length}</span></div>
+        <div class="table-wrap"><table class="table sortable">${th()}<tbody>`;
+      if (!group.length) html += `<tr><td colspan="6" class="muted">No players at this position.</td></tr>`;
+      for (const p of group) html += playerRowHtml(p);
+      html += `</tbody></table></div></div>`;
+    }
+    html += `</div>`;
+
     const needs = E.rosterNeeds(t.roster);
     if (needs.gaps.length) {
       html += `<div class="card"><h3>Depth gaps</h3><p class="muted small">${needs.gaps.map((g) => `${g.bucket} ${g.have}/${g.need}`).join(" · ")}</p></div>`;
     }
     panel.innerHTML = html;
-    panel.querySelectorAll("th[data-sort]").forEach((th) => {
-      th.style.cursor = "pointer";
-      th.addEventListener("click", () => {
-        const key = th.dataset.sort;
+
+    const sel = $("#rosterPosFilter");
+    if (sel) sel.addEventListener("change", () => {
+      rosterFilter = sel.value;
+      renderRoster();
+    });
+    panel.querySelectorAll("th[data-sort]").forEach((el) => {
+      el.style.cursor = "pointer";
+      el.addEventListener("click", () => {
+        const key = el.dataset.sort;
         if (rosterSort.key === key) rosterSort.dir *= -1;
         else {
           rosterSort.key = key;
@@ -627,7 +689,7 @@
     } else if (team.roster.length >= maxCount) {
       return toast("Roster full");
     }
-    const sal = Math.min(E.salaryFor(p.ovr, p.age), 6500000);
+    const sal = Math.min(E.salaryFor(p.ovr, p.age, p.exp || 0), 6500000);
     team.roster.push({ ...p, salary: sal, yearsLeft: 4 });
     team.roster = E.sortRoster(team.roster);
     E.recomputeRatings(team);
