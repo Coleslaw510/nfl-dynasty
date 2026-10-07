@@ -732,6 +732,21 @@
   }
   function clearSave() { localStorage.removeItem(SAVE_KEY); }
 
+  /** Latest completed user game from schedule/playoffs (live pointer, not a detached save copy). */
+  function latestUserGame(state) {
+    const uid = state.userTeamId;
+    let last = null;
+    for (const g of state.schedule || []) {
+      if ((g.homeId === uid || g.awayId === uid) && g.homeScore != null) last = g;
+    }
+    if (state.playoffs && state.playoffs.games) {
+      for (const g of state.playoffs.games) {
+        if ((g.homeId === uid || g.awayId === uid) && g.homeScore != null) last = g;
+      }
+    }
+    return last;
+  }
+
   function simWeek(state) {
     const rng = mulberry32(hashSeed(state.rngSeed + ":W" + state.week + ":" + state.phase + ":" + (state.playoffs && state.playoffs.round)));
     if (state.phase === "regular") {
@@ -746,27 +761,34 @@
         applyResult(state, g);
         if (g.homeId === state.userTeamId || g.awayId === state.userTeamId) userBox = g;
       }
-      state.lastBox = userBox;
+      // Keep prior box on bye weeks; always re-resolve from schedule so saves stay live
+      if (userBox) state.lastBox = userBox;
+      else {
+        const latest = latestUserGame(state);
+        if (latest) state.lastBox = latest;
+      }
       const maxWeek = state.regularWeeks || REGULAR_WEEKS;
       if (state.week >= maxWeek) {
         initPlayoffs(state);
       } else {
         state.week += 1;
       }
-      return;
+      return userBox;
     }
     if (state.phase === "playoffs") {
-      const beforeRound = state.playoffs.round;
-      const beforeLen = state.playoffs.games.filter((g) => g.homeScore == null).length;
       advancePlayoffs(state, rng);
-      // capture user game box
-      const ug = state.playoffs.games.find((g) => (g.homeId === state.userTeamId || g.awayId === state.userTeamId) && g.homeScore != null);
+      // Latest completed user playoff game (not the first)
+      let ug = null;
+      for (const g of state.playoffs.games) {
+        if ((g.homeId === state.userTeamId || g.awayId === state.userTeamId) && g.homeScore != null) ug = g;
+      }
       if (ug) state.lastBox = ug;
-      // If we only filled scores, stay; if advanced to new round with null scores, auto-stop for next click
       if (state.phase === "recap") {
         finalizeSeason(state);
       }
+      return ug;
     }
+    return null;
   }
 
   function finalizeSeason(state) {
@@ -823,7 +845,7 @@
     money, recordStr, clamp, clone, hashSeed, mulberry32,
     salaryFor, contractYears, teamCapHit, recomputeRatings, sortRoster, rosterNeeds,
     createState, userTeam, save, load, clearSave, makeSeasonSchedule, buildScheduleFromTemplate,
-    simWeek, standingsList, divisionWinners,
+    simWeek, latestUserGame, standingsList, divisionWinners,
     tickContracts, ageAndProgress, collectExpired, cpuResign, cpuFreeAgency,
     generateDraftClass, draftOrder, runCpuDraftPicks, startNextSeason,
     finalizeSeason

@@ -206,14 +206,29 @@
   }
 
   /* -------- Season UI -------- */
-  function setTab(tab) {
-    activeTab = tab;
-    $$(".tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+  function syncTabPanels() {
+    $$(".tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === activeTab));
     ["schedule", "box", "roster", "standings", "cap", "history"].forEach((t) => {
       const p = $(`#panel-${t}`);
-      if (p) p.hidden = t !== tab;
+      if (p) p.hidden = t !== activeTab;
     });
+  }
+
+  function setTab(tab) {
+    activeTab = tab;
+    syncTabPanels();
     renderActivePanel();
+  }
+
+  /** Live pointer to latest completed user game (matches CFB renderBox). */
+  function resolveLastBox() {
+    if (!state) return null;
+    const live = E.latestUserGame(state);
+    if (live) {
+      state.lastBox = live;
+      return live;
+    }
+    return state.lastBox && state.lastBox.homeScore != null ? state.lastBox : null;
   }
 
   function primaryLabel() {
@@ -249,7 +264,7 @@
       $("#weekLabel").textContent = "Recap";
     }
     $("#btnPrimary").textContent = primaryLabel();
-    $$(".tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === activeTab));
+    syncTabPanels();
     renderActivePanel();
   }
 
@@ -265,7 +280,7 @@
   function renderBoxPanel() {
     const panel = $("#panel-box");
     if (!panel) return;
-    panel.innerHTML = boxHtml(state.lastBox);
+    panel.innerHTML = boxHtml(resolveLastBox());
   }
 
   function teamLabel(id) {
@@ -300,9 +315,6 @@
       || reg.find((g) => g.homeScore == null && state.phase === "regular");
 
     let html = "";
-    if (state.lastBox) {
-      html += `<div class="card"><h3>Last result</h3>${boxHtml(state.lastBox)}</div>`;
-    }
 
     if (state.phase === "regular" && next) {
       const oppId = next.homeId === uid ? next.awayId : next.homeId;
@@ -554,13 +566,18 @@
       E.save(state);
       return;
     }
-    E.simWeek(state);
+    const userBox = E.simWeek(state);
     if (state.phase === "offseason") {
       show("offseason");
       renderOffseason();
     } else {
-      if (state.lastBox) activeTab = "box";
+      // CFB behavior: sim → show latest box on Box tab (schedule on bye)
+      activeTab = userBox ? "box" : "schedule";
+      show("season");
       renderSeason();
+      if (userBox) {
+        toast(`Week ${userBox.week} final · ${teamLabel(userBox.awayId)} ${userBox.awayScore}–${userBox.homeScore} ${teamLabel(userBox.homeId)}`);
+      }
     }
     E.save(state);
   }
