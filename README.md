@@ -4,34 +4,34 @@ Classic NFL dynasty sim (no all-time shop) — sibling to [CFB Season Sim](https
 
 **Live:** https://coleslaw510.github.io/nfl-dynasty/
 
-## v1 features
+## Features
 
 - Mode picker (CFB Season Sim ↔ NFL Dynasty)
 - All 32 real NFL teams
-- Slim roster: starters + ~1 backup per position group (~29 players)
-- Player OVRs from **TeamCrafters Madden 26 Super Bowl** published roster pages  
-  Source: https://www.teamcrafters.net/rosters/MADDEN26/23-super-bowl  
+- **Full 53-man rosters** (starters + backups)
+- Player OVRs from **TeamCrafters Madden 27 · 10/1/26 Update** (mirrors [EA Madden ratings](https://www.ea.com/games/madden-nfl/ratings))  
+  Source: https://www.teamcrafters.net/rosters/MADDEN27/10-01-26  
   Ages estimated from listed NFL experience years (not DOBs)
-- Simplified salary cap (~$255.4M), contracts, free agency, 3-round draft
-- Division opponents twice per season; 17-week schedule + NFL playoffs through Super Bowl
+- Simplified salary cap (~$279.2M), contracts, free agency, 3-round draft
+- **Year 1 = real 2026 NFL regular-season schedule** (ESPN scoreboard API; 18 weeks with byes). Later seasons are generated with division opponents 2×.
+- NFL playoffs through Super Bowl
 - Offseason aging: improve through ~age 28, regress in the 30s, some retirements
 - Contract years decrement each offseason
+- Roster tab sortable by Pos / Player / OVR / Age / Yrs / Salary
 - Clean tabbed UI: Schedule · Roster · Standings · Cap · History
 
-## Out of scope (v1)
+## Out of scope (for now)
 
-- Full 53-man roster / practice squad
+- Practice squad
 - Real NFL contract structures (signing bonus, dead money, restructures)
 - Trade block / multiplayer
 - Exact DOB ages / injury system / play-calling
 - All-time shop (intentionally CFB-only)
-- Full 7-round draft (v1 is 3 rounds)
-- Perfect NFL scheduling rotation beyond division 2×
+- Full 7-round draft (currently 3 rounds)
 
 ## Rebuild roster data
 
 ```bash
-# optional: populate data/_cache by fetching TeamCrafters HTML, then:
 python3 scripts/build_madden_data.py
 ```
 

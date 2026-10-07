@@ -172,3 +172,47 @@ main { max-width: 1100px; margin: 0 auto; padding: 18px 16px 48px; }
   .game-row { grid-template-columns: 52px 1fr; }
   .game-row .score { grid-column: 2; }
 }
+
+/* Compact cap chip (avoid tall wrapping pill on mobile) */
+.chip-cap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  max-width: none;
+  padding: 5px 10px;
+  line-height: 1.15;
+}
+.chip-cap .cap-label {
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  font-size: 10px;
+  color: var(--muted);
+}
+.chip-cap .cap-figures {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.chip-cap .cap-sep { color: var(--muted); margin: 0 1px; }
+.chip-cap .cap-room { color: var(--accent2); font-weight: 600; font-variant-numeric: tabular-nums; }
+.chip-cap .cap-over { color: var(--danger); font-weight: 600; font-variant-numeric: tabular-nums; }
+#yearChip { white-space: nowrap; }
+.topbar-meta {
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.topbar { gap: 8px; }
+@media (max-width: 640px) {
+  .brand-sub { display: none; }
+  .brand-mark { width: 34px; height: 34px; }
+  .chip-cap { padding: 4px 8px; font-size: 11px; }
+  .topbar-actions .btn { padding: 8px 10px; }
+}
+
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table.sortable th[data-sort] { user-select: none; }
+.table.sortable th[data-sort]:hover { color: var(--text); }

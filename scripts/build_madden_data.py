@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Fetch TeamCrafters Madden 26 Super Bowl ratings → data/league.json
+"""Fetch TeamCrafters Madden 27 ratings → data/league.json
 
-Source: https://www.teamcrafters.net/rosters/MADDEN26/23-super-bowl
-Open published HTML only (same approach as CFB sim). Age estimated from
-listed NFL experience years (class field like "7 Years").
+Primary source mirrors EA Madden ratings (https://www.ea.com/games/madden-nfl/ratings)
+via TeamCrafters open roster pages:
+  https://www.teamcrafters.net/rosters/MADDEN27/10-01-26
+
+Also embeds the real 2026 NFL regular-season schedule from ESPN's public scoreboard API.
+Ages estimated from listed NFL experience years. Contracts are simplified dynasty values.
 """
 from __future__ import annotations
 import json, os, re, ssl, time, urllib.request
@@ -11,13 +14,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "data", "league.json")
-VERSION = "23-super-bowl"
-BASE = f"https://www.teamcrafters.net/rosters/MADDEN26/{VERSION}"
+CACHE = os.path.join(ROOT, "data", "_cache")
+VERSION = "10-01-26"
+BASE = f"https://www.teamcrafters.net/rosters/MADDEN27/{VERSION}"
+EA_RATINGS = "https://www.ea.com/games/madden-nfl/ratings"
 CTX = ssl.create_default_context()
-UA = {"User-Agent": "Mozilla/5.0 nfl-dynasty/1.0 (personal fan tool; +https://github.com/Coleslaw510/nfl-dynasty)"}
+UA = {"User-Agent": "Mozilla/5.0 nfl-dynasty/1.1 (personal fan tool; +https://github.com/Coleslaw510/nfl-dynasty)"}
 
-# TeamCrafters numeric IDs discovered from the roster hub (26551 = Free Agents)
-TEAM_IDS = list(range(26519, 26552))
+TEAM_IDS = list(range(26519, 26552))  # 26551 = Free Agents
 
 POS_BUCKET = {
     "QB": "QB",
@@ -27,22 +31,19 @@ POS_BUCKET = {
     "LT": "OL", "LG": "OL", "C": "OL", "RG": "OL", "RT": "OL",
     "OL": "OL", "OT": "OL", "OG": "OL", "G": "OL", "T": "OL",
     "LE": "DL", "RE": "DL", "DT": "DL", "NT": "DL", "DL": "DL", "DE": "DL",
-    "LEDG": "EDGE", "REDG": "EDGE", "ED": "EDGE",
-    "LOLB": "LB", "MLB": "LB", "ROLB": "LB", "LB": "LB", "ILB": "LB", "OLB": "LB",
+    "LEDG": "EDGE", "REDG": "EDGE", "ED": "EDGE", "LOLB": "EDGE", "ROLB": "EDGE",
+    "MLB": "LB", "LB": "LB", "ILB": "LB", "OLB": "LB",
     "CB": "DB", "FS": "DB", "SS": "DB", "DB": "DB", "S": "DB", "NB": "DB",
     "K": "K", "PK": "K",
     "P": "P",
+    "LS": "LS",
 }
 
-# Slim dynasty depth: starters + limited backups
-STARTER_ORDER = {
-    "QB": 1, "RB": 1, "WR": 3, "TE": 1,
-    "OL": 5, "EDGE": 2, "DL": 2, "LB": 3, "DB": 4, "K": 1, "P": 1,
-}
-BACKUP_ORDER = {
-    "QB": 1, "RB": 1, "WR": 1, "TE": 1,
-    "OL": 1, "EDGE": 1, "DL": 1, "LB": 1, "DB": 1, "K": 0, "P": 0,
-}
+# Full 53-man depth targets by bucket (starters + backups)
+ROSTER_DEPTH = {
+    "QB": 3, "RB": 4, "WR": 6, "TE": 3, "OL": 9,
+    "EDGE": 4, "DL": 5, "LB": 6, "DB": 10, "K": 1, "P": 1, "LS": 1,
+}  # sums to 53
 
 DIVISIONS = {
     "AFC East": ["Buffalo Bills", "Miami Dolphins", "New England Patriots", "New York Jets"],
@@ -69,6 +70,9 @@ ABBR = {
     "Tennessee Titans": "TEN", "Washington Commanders": "WAS",
 }
 
+# ESPN scoreboard uses WSH for Washington
+ESPN_ABBR = {"WSH": "WAS"}
+
 COLORS = {
     "ARI": "#97233F", "ATL": "#A71930", "BAL": "#241773", "BUF": "#00338D",
     "CAR": "#0085CA", "CHI": "#0B162A", "CIN": "#FB4F14", "CLE": "#311D00",
@@ -90,7 +94,7 @@ def get(url, retries=4):
                 return r.read().decode("utf-8", "replace")
         except Exception as e:
             last = e
-            time.sleep(0.35 * (attempt + 1))
+            time.sleep(0.4 * (attempt + 1))
     raise last
 
 
@@ -151,7 +155,6 @@ def parse_team_name(html: str, tid: int):
     m = re.search(r"<title>([^<]+?) Madden", html)
     if m:
         short = m.group(1).strip()
-        # map city/short → full
         for full in ABBR:
             if full.startswith(short) or short in full:
                 return full
@@ -167,22 +170,23 @@ def exp_years(cls: str) -> int:
 
 
 def estimate_age(exp: int, pos: str) -> int:
-    # Rough NFL age from experience; rookies ~22
     base = 22 + max(0, exp - 1)
-    if pos in ("K", "P") and exp >= 8:
+    if pos in ("K", "P", "LS") and exp >= 8:
         base += 2
     return max(21, min(44, base))
 
 
 def salary_for(ovr: int, age: int, years: int) -> int:
-    # Annual salary in dollars (simplified Madden-ish)
-    base = 800_000 + max(0, ovr - 55) ** 2 * 18_000
+    base = 800_000 + max(0, ovr - 55) ** 2 * 14_000
     if ovr >= 90:
-        base += (ovr - 89) * 1_800_000
+        base += (ovr - 89) * 1_500_000
     if ovr >= 95:
-        base += (ovr - 94) * 2_500_000
+        base += (ovr - 94) * 2_000_000
     if age >= 32:
         base = int(base * 0.92)
+    # Backups / low OVR stay near veterans minimum
+    if ovr < 70:
+        base = min(base, 1_800_000)
     return int(round(base / 10_000) * 10_000)
 
 
@@ -200,8 +204,28 @@ def contract_years(ovr: int, age: int) -> int:
     return 2
 
 
-def slim_roster(raw_players: list) -> list:
-    """Keep starters + limited backups; drop practice-squad depth."""
+def player_row(p: dict, bucket: str) -> dict:
+    exp = exp_years(p.get("class") or "")
+    age = estimate_age(exp, bucket)
+    ovr = int(p.get("OVR") or 60)
+    years = contract_years(ovr, age)
+    return {
+        "id": int(p["id"]),
+        "n": f'{p.get("firstName","").strip()} {p.get("lastName","").strip()}'.strip(),
+        "pos": p.get("POS") or bucket,
+        "bucket": bucket,
+        "j": str(p.get("number") or ""),
+        "ovr": ovr,
+        "age": age,
+        "exp": exp,
+        "yearsLeft": years,
+        "salary": salary_for(ovr, age, years),
+        "spd": int(p.get("SPD") or 0) or None,
+    }
+
+
+def full_roster(raw_players: list) -> list:
+    """Keep a full 53-man roster by position depth, then fill leftovers by OVR."""
     buckets: dict[str, list] = {}
     for p in raw_players:
         if p.get("isFiller"):
@@ -214,29 +238,33 @@ def slim_roster(raw_players: list) -> list:
     for b in buckets:
         buckets[b].sort(key=lambda x: (-int(x.get("OVR") or 0), x.get("lastName") or ""))
 
+    kept_ids = set()
     kept = []
-    for bucket, starters in STARTER_ORDER.items():
-        backups = BACKUP_ORDER.get(bucket, 0)
-        need = starters + backups
+    for bucket, need in ROSTER_DEPTH.items():
         for p in buckets.get(bucket, [])[:need]:
-            exp = exp_years(p.get("class") or "")
-            age = estimate_age(exp, bucket if bucket not in ("EDGE",) else "DL")
-            ovr = int(p.get("OVR") or 60)
-            years = contract_years(ovr, age)
-            kept.append({
-                "id": int(p["id"]),
-                "n": f'{p.get("firstName","").strip()} {p.get("lastName","").strip()}'.strip(),
-                "pos": p.get("POS") or bucket,
-                "bucket": bucket,
-                "j": str(p.get("number") or ""),
-                "ovr": ovr,
-                "age": age,
-                "exp": exp,
-                "yearsLeft": years,
-                "salary": salary_for(ovr, age, years),
-                "spd": int(p.get("SPD") or 0) or None,
-            })
-    return kept
+            row = player_row(p, bucket)
+            kept.append(row)
+            kept_ids.add(row["id"])
+
+    if len(kept) < 53:
+        rest = []
+        for bucket, plist in buckets.items():
+            for p in plist:
+                pid = int(p["id"])
+                if pid in kept_ids:
+                    continue
+                rest.append(player_row(p, bucket))
+        rest.sort(key=lambda x: (-x["ovr"], x["n"]))
+        for row in rest:
+            if len(kept) >= 53:
+                break
+            kept.append(row)
+            kept_ids.add(row["id"])
+
+    # Prefer position order then OVR
+    order = list(ROSTER_DEPTH.keys())
+    kept.sort(key=lambda p: (order.index(p["bucket"]) if p["bucket"] in order else 99, -p["ovr"], p["n"]))
+    return kept[:53]
 
 
 def team_strength(players: list) -> dict:
@@ -255,21 +283,56 @@ def team_strength(players: list) -> dict:
 
 
 def fetch_team(tid: int):
-    cache = os.path.join(DATA if False else os.path.join(ROOT, "data", "_cache"), f"{tid}.html")
-    cache = os.path.join(ROOT, "data", "_cache", f"{tid}.html")
-    if os.path.exists(cache) and os.path.getsize(cache) > 50000:
+    cache = os.path.join(CACHE, f"m27_{VERSION}_{tid}.html")
+    if os.path.exists(cache) and os.path.getsize(cache) > 40000:
         html = open(cache, encoding="utf-8", errors="replace").read()
     else:
         html = get(f"{BASE}/{tid}")
-        os.makedirs(os.path.dirname(cache), exist_ok=True)
+        os.makedirs(CACHE, exist_ok=True)
         open(cache, "w", encoding="utf-8").write(html)
     name = parse_team_name(html, tid)
     players = parse_players(html)
     return tid, name, players
 
 
+def resolve_full_name(name: str) -> str:
+    if name in ABBR:
+        return name
+    matches = [c for c in ABBR if c.startswith(name) or name in c]
+    if len(matches) == 1:
+        return matches[0]
+    return name
+
+
+def fetch_espn_schedule():
+    cache = os.path.join(CACHE, "espn_2026_schedule.json")
+    if os.path.exists(cache):
+        return json.load(open(cache))
+    games = []
+    for w in range(1, 19):
+        url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?year=2026&seasontype=2&week={w}"
+        raw = json.loads(get(url))
+        for e in raw.get("events") or []:
+            comps = e.get("competitions") or []
+            if not comps:
+                continue
+            home = away = None
+            for t in comps[0].get("competitors") or []:
+                abbr = t.get("team", {}).get("abbreviation")
+                abbr = ESPN_ABBR.get(abbr, abbr)
+                if t.get("homeAway") == "home":
+                    home = abbr
+                else:
+                    away = abbr
+            if home and away:
+                games.append({"week": w, "home": home, "away": away, "date": e.get("date")})
+    open(cache, "w").write(json.dumps(games))
+    return games
+
+
 def main():
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
+    os.makedirs(CACHE, exist_ok=True)
     results = {}
     with ThreadPoolExecutor(max_workers=8) as ex:
         futs = {ex.submit(fetch_team, tid): tid for tid in TEAM_IDS}
@@ -278,7 +341,6 @@ def main():
             results[tid] = (name, players)
             print(f"  {tid} {name}: {len(players)} raw")
 
-    # Map division info
     name_to_div = {}
     name_to_conf = {}
     for div, names in DIVISIONS.items():
@@ -298,56 +360,15 @@ def main():
                 bucket = POS_BUCKET.get(pos)
                 if not bucket:
                     continue
-                exp = exp_years(p.get("class") or "")
-                age = estimate_age(exp, bucket)
-                ovr = int(p.get("OVR") or 60)
-                free_agents.append({
-                    "id": int(p["id"]),
-                    "n": f'{p.get("firstName","").strip()} {p.get("lastName","").strip()}'.strip(),
-                    "pos": pos,
-                    "bucket": bucket,
-                    "j": str(p.get("number") or ""),
-                    "ovr": ovr,
-                    "age": age,
-                    "exp": exp,
-                    "yearsLeft": 0,
-                    "salary": salary_for(ovr, age, 1),
-                    "asking": int(salary_for(ovr, age, 1) * 1.05),
-                })
+                row = player_row(p, bucket)
+                row["yearsLeft"] = 0
+                row["asking"] = int(row["salary"] * 1.05)
+                free_agents.append(row)
             continue
-        # Normalize short city names to full franchise names
-        full = name
-        if name not in ABBR:
-            for cand in ABBR:
-                if cand.startswith(name + " ") or cand == name:
-                    full = cand
-                    break
-            else:
-                # title was city only e.g. "Buffalo"
-                for cand in ABBR:
-                    if cand.split()[0] == name or (name == "New York" and "Jets" in cand):
-                        # ambiguous NY — leave as-is and fix below
-                        pass
-                # Prefer schema full name already; if city-only, match uniquely
-                matches = [c for c in ABBR if c.startswith(name)]
-                if len(matches) == 1:
-                    full = matches[0]
-                elif name == "New York":
-                    # Can't know — check player stars? skip special case handled by schema
-                    full = name
-                elif name == "Los Angeles":
-                    matches = [c for c in ABBR if "Los Angeles" in c]
-                    full = name  # schema should have full
 
-        # Re-parse using schema preference already in parse_team_name
-        if full not in ABBR:
-            # try contains
-            matches = [c for c in ABBR if name in c]
-            if len(matches) == 1:
-                full = matches[0]
-
-        slim = slim_roster(raw)
-        ratings = team_strength(slim)
+        full = resolve_full_name(name)
+        roster = full_roster(raw)
+        ratings = team_strength(roster)
         abbr = ABBR.get(full, name[:3].upper())
         teams.append({
             "id": str(tid),
@@ -360,43 +381,55 @@ def main():
             "division": name_to_div.get(full) or name_to_div.get(name) or "?",
             "color": COLORS.get(abbr, "#333333"),
             "ratings": ratings,
-            "roster": slim,
+            "roster": roster,
         })
 
-    # Fix any unresolved names using division membership count
     known = {t["name"] for t in teams}
     missing = [n for n in ABBR if n not in known]
     if missing:
         print("WARNING missing teams:", missing)
 
     free_agents.sort(key=lambda p: -p["ovr"])
-    # Cap FA pool size for v1 UI
-    free_agents = free_agents[:180]
+    free_agents = free_agents[:220]
 
-    # Cap figure (approximate 2025/26 style, in dollars)
+    espn_games = fetch_espn_schedule()
+    schedule2026 = [{"week": g["week"], "home": ESPN_ABBR.get(g["home"], g["home"]),
+                     "away": ESPN_ABBR.get(g["away"], g["away"])} for g in espn_games]
+
     payload = {
         "source": BASE,
-        "sourceLabel": "TeamCrafters Madden 26 Super Bowl ratings",
+        "eaRatings": EA_RATINGS,
+        "sourceLabel": "TeamCrafters Madden 27 · 10/1/26 Update (EA Madden ratings)",
         "rosterVersion": VERSION,
         "fetchedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "salaryCap": 255_400_000,
+        "salaryCap": 279_200_000,
         "seasonYear": 2026,
+        "regularWeeks": 18,
+        "rosterLimit": 53,
         "teamCount": len(teams),
         "playerCount": sum(len(t["roster"]) for t in teams),
         "freeAgentCount": len(free_agents),
         "teams": sorted(teams, key=lambda t: (t["conference"], t["division"], t["name"])),
         "freeAgents": free_agents,
         "divisions": DIVISIONS,
+        "schedule2026": schedule2026,
         "notes": [
-            "Player OVRs from TeamCrafters published Madden 26 Super Bowl roster pages.",
+            "Player OVRs from TeamCrafters published Madden 27 10/1/26 Update roster pages (mirrors EA Madden ratings).",
+            "EA ratings hub: https://www.ea.com/games/madden-nfl/ratings",
             "Ages estimated from listed NFL experience years (not exact DOB).",
             "Contracts and salaries are simplified dynasty values, not real NFL contracts.",
-            "Rosters trimmed to starters + ~1 backup per position group.",
+            "Year-1 schedule is the real 2026 NFL regular season (ESPN scoreboard API); later years are generated.",
+            "Rosters trimmed to a full 53-man active roster by position depth.",
         ],
     }
     with open(OUT, "w") as f:
         json.dump(payload, f, separators=(",", ":"))
-    print(f"Wrote {OUT}: {payload['teamCount']} teams, {payload['playerCount']} rostered, {payload['freeAgentCount']} FA")
+    counts = sorted({len(t["roster"]) for t in teams})
+    print(f"Wrote {OUT}: {payload['teamCount']} teams, {payload['playerCount']} rostered, "
+          f"{payload['freeAgentCount']} FA, schedule games={len(schedule2026)}, roster sizes={counts}")
+    # Sample CHI
+    chi = next(t for t in teams if t["abbr"] == "CHI")
+    print("CHI sample:", [(p["pos"], p["n"], p["ovr"]) for p in chi["roster"][:6]], "n=", len(chi["roster"]))
 
 
 if __name__ == "__main__":

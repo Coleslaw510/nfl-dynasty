@@ -2,10 +2,12 @@
 (function (global) {
   "use strict";
 
-  const SAVE_KEY = "nfl-dynasty-v1";
+  const SAVE_KEY = "nfl-dynasty-v2";
   const STARTER_NEEDS = { QB: 1, RB: 1, WR: 3, TE: 1, OL: 5, EDGE: 2, DL: 2, LB: 3, DB: 4, K: 1, P: 1 };
-  const BACKUP_NEEDS = { QB: 1, RB: 1, WR: 1, TE: 1, OL: 1, EDGE: 1, DL: 1, LB: 1, DB: 1, K: 0, P: 0 };
-  const BUCKET_ORDER = ["QB", "RB", "WR", "TE", "OL", "EDGE", "DL", "LB", "DB", "K", "P"];
+  const BACKUP_NEEDS = { QB: 2, RB: 3, WR: 3, TE: 2, OL: 4, EDGE: 2, DL: 3, LB: 3, DB: 6, K: 0, P: 0, LS: 1 };
+  const BUCKET_ORDER = ["QB", "RB", "WR", "TE", "OL", "EDGE", "DL", "LB", "DB", "K", "P", "LS"];
+  const ROSTER_LIMIT = 53;
+  const REGULAR_WEEKS = 18;
 
   function mulberry32(a) {
     return function () {
@@ -212,6 +214,41 @@
     return scheduled.sort((a, b) => a.week - b.week || a.id.localeCompare(b.id));
   }
 
+
+  function abbrMap(teams) {
+    const m = {};
+    for (const t of teams) m[t.abbr] = t.id;
+    return m;
+  }
+
+  function buildScheduleFromTemplate(teams, year, template) {
+    const byAbbr = abbrMap(teams);
+    const byId = {};
+    for (const t of teams) byId[t.id] = t;
+    const out = [];
+    for (const g of template) {
+      const homeId = byAbbr[g.home];
+      const awayId = byAbbr[g.away];
+      if (!homeId || !awayId) continue;
+      const sameDiv = byId[homeId].division === byId[awayId].division;
+      out.push({
+        id: `${year}-W${g.week}-${homeId}-${awayId}`,
+        week: g.week,
+        homeId, awayId,
+        kind: sameDiv ? "DIV" : "REG",
+        homeScore: null, awayScore: null
+      });
+    }
+    return out.sort((a, b) => a.week - b.week || a.id.localeCompare(b.id));
+  }
+
+  function makeSeasonSchedule(league, teams, year, rng) {
+    if (year === (league.seasonYear || 2026) && league.schedule2026 && league.schedule2026.length) {
+      return buildScheduleFromTemplate(teams, year, league.schedule2026);
+    }
+    return generateSchedule(teams, year, rng);
+  }
+
   /* -------- Game simulation -------- */
   function expectedPoints(off, def, homeBoost) {
     return clamp(21.5 + (off - 78) * 0.42 - (def - 78) * 0.38 + homeBoost, 7, 45);
@@ -332,14 +369,14 @@
     // Wild card: 2v7, 3v6, 4v5; 1 bye
     function wc(conf, ids) {
       return [
-        { id: `${state.year}-${conf}-WC-2-7`, week: 18, homeId: ids[1], awayId: ids[6], kind: "WC", conf, homeScore: null, awayScore: null },
-        { id: `${state.year}-${conf}-WC-3-6`, week: 18, homeId: ids[2], awayId: ids[5], kind: "WC", conf, homeScore: null, awayScore: null },
-        { id: `${state.year}-${conf}-WC-4-5`, week: 18, homeId: ids[3], awayId: ids[4], kind: "WC", conf, homeScore: null, awayScore: null },
+        { id: `${state.year}-${conf}-WC-2-7`, week: 19, homeId: ids[1], awayId: ids[6], kind: "WC", conf, homeScore: null, awayScore: null },
+        { id: `${state.year}-${conf}-WC-3-6`, week: 19, homeId: ids[2], awayId: ids[5], kind: "WC", conf, homeScore: null, awayScore: null },
+        { id: `${state.year}-${conf}-WC-4-5`, week: 19, homeId: ids[3], awayId: ids[4], kind: "WC", conf, homeScore: null, awayScore: null },
       ];
     }
     state.playoffs.games = wc("AFC", state.playoffs.afc).concat(wc("NFC", state.playoffs.nfc));
     state.phase = "playoffs";
-    state.week = 18;
+    state.week = 19;
   }
 
   function playoffWinnerId(game) {
@@ -365,32 +402,32 @@
         // sort by original seed index
         alive.sort((a, b) => ids.indexOf(a) - ids.indexOf(b));
         return [
-          { id: `${state.year}-${conf}-DIV-1`, week: 19, homeId: alive[0], awayId: alive[3], kind: "DIV", conf, homeScore: null, awayScore: null },
-          { id: `${state.year}-${conf}-DIV-2`, week: 19, homeId: alive[1], awayId: alive[2], kind: "DIV", conf, homeScore: null, awayScore: null },
+          { id: `${state.year}-${conf}-DIV-1`, week: 20, homeId: alive[0], awayId: alive[3], kind: "DIV", conf, homeScore: null, awayScore: null },
+          { id: `${state.year}-${conf}-DIV-2`, week: 20, homeId: alive[1], awayId: alive[2], kind: "DIV", conf, homeScore: null, awayScore: null },
         ];
       }
       po.games = nextDiv("AFC", po.afc).concat(nextDiv("NFC", po.nfc));
       po.round = "DIV";
-      state.week = 19;
+      state.week = 20;
     } else if (po.round === "DIV") {
       function confFinal(conf, ids) {
         const games = po.games.filter((g) => g.conf === conf && g.kind === "DIV");
         const winners = games.map(playoffWinnerId);
         winners.sort((a, b) => ids.indexOf(a) - ids.indexOf(b));
-        return { id: `${state.year}-${conf}-CONF`, week: 20, homeId: winners[0], awayId: winners[1], kind: "CONF", conf, homeScore: null, awayScore: null };
+        return { id: `${state.year}-${conf}-CONF`, week: 21, homeId: winners[0], awayId: winners[1], kind: "CONF", conf, homeScore: null, awayScore: null };
       }
       po.games = [confFinal("AFC", po.afc), confFinal("NFC", po.nfc)];
       po.round = "CONF";
-      state.week = 20;
+      state.week = 21;
     } else if (po.round === "CONF") {
       const afcG = po.games.find((g) => g.conf === "AFC" && g.kind === "CONF");
       const nfcG = po.games.find((g) => g.conf === "NFC" && g.kind === "CONF");
       po.games = [{
-        id: `${state.year}-SB`, week: 21, homeId: playoffWinnerId(afcG), awayId: playoffWinnerId(nfcG),
+        id: `${state.year}-SB`, week: 22, homeId: playoffWinnerId(afcG), awayId: playoffWinnerId(nfcG),
         kind: "SB", conf: "NFL", homeScore: null, awayScore: null
       }];
       po.round = "SB";
-      state.week = 21;
+      state.week = 22;
     } else if (po.round === "SB") {
       const sb = po.games.find((g) => g.kind === "SB");
       po.championId = playoffWinnerId(sb);
@@ -567,17 +604,21 @@
     }
     const rng = mulberry32(hashSeed("nfl-dynasty-" + league.seasonYear + "-" + userTeamId));
     const year = league.seasonYear || 2026;
-    const schedule = generateSchedule(teams, year, rng);
+    const schedule = makeSeasonSchedule(league, teams, year, rng);
     const records = {};
     for (const t of teams) records[t.id] = emptyRecord();
     return {
-      version: 1,
+      version: 2,
       year,
       week: 1,
       phase: "regular", // regular | playoffs | recap | offseason
       offseasonStep: null, // resign | fa | draft | progress | done
       userTeamId,
       salaryCap: league.salaryCap,
+      rosterLimit: league.rosterLimit || ROSTER_LIMIT,
+      regularWeeks: league.regularWeeks || REGULAR_WEEKS,
+      seasonYearBase: year,
+      schedule2026: league.schedule2026 || null,
       teams,
       teamsById,
       schedule,
@@ -626,7 +667,8 @@
         if (g.homeId === state.userTeamId || g.awayId === state.userTeamId) userBox = g;
       }
       state.lastBox = userBox;
-      if (state.week >= 17) {
+      const maxWeek = state.regularWeeks || REGULAR_WEEKS;
+      if (state.week >= maxWeek) {
         initPlayoffs(state);
       } else {
         state.week += 1;
@@ -683,7 +725,8 @@
     state.lastBox = null;
     state.draft = null;
     const rng = mulberry32(hashSeed(state.rngSeed + ":Y" + state.year));
-    state.schedule = generateSchedule(state.teams, state.year, rng);
+    const leagueLike = { seasonYear: state.seasonYearBase || 2026, schedule2026: state.schedule2026 };
+    state.schedule = makeSeasonSchedule(leagueLike, state.teams, state.year, rng);
     state.records = {};
     for (const t of state.teams) state.records[t.id] = emptyRecord();
     // Soft cap bump
@@ -691,10 +734,10 @@
   }
 
   global.NFLDynasty = {
-    SAVE_KEY, STARTER_NEEDS, BACKUP_NEEDS, BUCKET_ORDER,
+    SAVE_KEY, STARTER_NEEDS, BACKUP_NEEDS, BUCKET_ORDER, ROSTER_LIMIT, REGULAR_WEEKS,
     money, recordStr, clamp, clone, hashSeed, mulberry32,
     salaryFor, contractYears, teamCapHit, recomputeRatings, sortRoster, rosterNeeds,
-    createState, userTeam, save, load, clearSave,
+    createState, userTeam, save, load, clearSave, makeSeasonSchedule, buildScheduleFromTemplate,
     simWeek, standingsList, divisionWinners,
     ageAndProgress, collectExpired, cpuResign, cpuFreeAgency,
     generateDraftClass, draftOrder, runCpuDraftPicks, startNextSeason,

@@ -36,12 +36,25 @@
     $("#topMeta").hidden = !(view === "season" || view === "offseason");
   }
 
+  function moneyShort(n) {
+    const v = Math.round(n);
+    const sign = v < 0 ? "-" : "";
+    const a = Math.abs(v);
+    if (a >= 1e6) {
+      const m = a / 1e6;
+      return sign + "$" + (m >= 100 ? Math.round(m) : m.toFixed(m >= 10 ? 0 : 1)) + "M";
+    }
+    if (a >= 1e3) return sign + "$" + Math.round(a / 1e3) + "K";
+    return sign + "$" + a;
+  }
+
   function refreshMeta() {
     if (!state) return;
     const hit = E.teamCapHit(E.userTeam(state));
     const room = state.salaryCap - hit;
-    $("#capChip").innerHTML = `Cap <strong>${E.money(hit)}</strong> / ${E.money(state.salaryCap)} · room <strong>${E.money(room)}</strong>`;
-    $("#yearChip").innerHTML = `<strong>${state.year}</strong> season`;
+    const roomCls = room < 0 ? "cap-over" : "cap-room";
+    $("#capChip").innerHTML = `<span class="cap-label">Cap</span><span class="cap-figures"><strong>${moneyShort(hit)}</strong><span class="cap-sep">/</span>${moneyShort(state.salaryCap)}</span><span class="${roomCls}">${room < 0 ? "" : "+"}${moneyShort(room)}</span>`;
+    $("#yearChip").textContent = String(state.year);
   }
 
   function renderTeamChip(el) {
@@ -102,7 +115,12 @@
   }
 
   function primaryLabel() {
-    if (state.phase === "regular") return state.week >= 17 ? "Sim week 17" : `Sim week ${state.week}`;
+    if (state.phase === "regular") {
+      const uid = state.userTeamId;
+      const mine = state.schedule.find((g) => g.week === state.week && (g.homeId === uid || g.awayId === uid));
+      if (!mine) return `Sim bye · W${state.week}`;
+      return `Sim week ${state.week}`;
+    }
     if (state.phase === "playoffs") {
       const map = { WC: "Sim Wild Card", DIV: "Sim Divisional", CONF: "Sim Conference", SB: "Sim Super Bowl" };
       return map[state.playoffs.round] || "Sim playoffs";
@@ -118,7 +136,9 @@
     $("#recordLabel").textContent = E.recordStr(r.w, r.l, r.t);
     if (state.phase === "regular") {
       $("#phaseLabel").textContent = "Regular season";
-      $("#weekLabel").textContent = `Week ${state.week}`;
+      const uid = state.userTeamId;
+      const mine = state.schedule.find((g) => g.week === state.week && (g.homeId === uid || g.awayId === uid));
+      $("#weekLabel").textContent = mine ? `Week ${state.week}` : `Week ${state.week} · Bye`;
     } else if (state.phase === "playoffs") {
       $("#phaseLabel").textContent = "Playoffs";
       $("#weekLabel").textContent = ({ WC: "Wild Card", DIV: "Divisional", CONF: "Conference", SB: "Super Bowl" })[state.playoffs.round] || "Playoffs";
@@ -227,13 +247,39 @@
     if (inline) inline.addEventListener("click", onPrimary);
   }
 
+  let rosterSort = { key: "pos", dir: 1 };
+
   function renderRoster() {
     const t = E.userTeam(state);
     const panel = $("#panel-roster");
-    let html = `<div class="card"><h3>Roster · ${t.roster.length} players</h3>
-      <p class="muted small">Starters + limited backups. Sorted by position group.</p>
-      <table class="table"><thead><tr><th>Pos</th><th>Player</th><th>OVR</th><th>Age</th><th>Yrs</th><th>Salary</th></tr></thead><tbody>`;
-    for (const p of t.roster) {
+    const limit = state.rosterLimit || E.ROSTER_LIMIT || 53;
+    const sorted = t.roster.slice().sort((a, b) => {
+      const k = rosterSort.key;
+      const dir = rosterSort.dir;
+      if (k === "pos") {
+        const bi = (p) => E.BUCKET_ORDER.indexOf(p.bucket);
+        const d = bi(a) - bi(b) || b.ovr - a.ovr || a.n.localeCompare(b.n);
+        return dir * d;
+      }
+      if (k === "n") return dir * a.n.localeCompare(b.n);
+      if (k === "ovr") return dir * (a.ovr - b.ovr) || a.n.localeCompare(b.n);
+      if (k === "age") return dir * (a.age - b.age) || b.ovr - a.ovr;
+      if (k === "yearsLeft") return dir * (a.yearsLeft - b.yearsLeft) || b.ovr - a.ovr;
+      if (k === "salary") return dir * (a.salary - b.salary) || b.ovr - a.ovr;
+      return 0;
+    });
+    const mark = (key) => rosterSort.key === key ? (rosterSort.dir > 0 ? " ▲" : " ▼") : "";
+    let html = `<div class="card"><h3>Roster · ${t.roster.length}/${limit}</h3>
+      <p class="muted small">Full 53-man roster. Tap a column to sort.</p>
+      <div class="table-wrap"><table class="table sortable"><thead><tr>
+        <th data-sort="pos">Pos${mark("pos")}</th>
+        <th data-sort="n">Player${mark("n")}</th>
+        <th data-sort="ovr">OVR${mark("ovr")}</th>
+        <th data-sort="age">Age${mark("age")}</th>
+        <th data-sort="yearsLeft">Yrs${mark("yearsLeft")}</th>
+        <th data-sort="salary">Salary${mark("salary")}</th>
+      </tr></thead><tbody>`;
+    for (const p of sorted) {
       html += `<tr>
         <td>${p.pos}</td>
         <td>${p.n}${p.j ? ` <span class="muted small">#${p.j}</span>` : ""}</td>
@@ -243,12 +289,24 @@
         <td>${E.money(p.salary)}</td>
       </tr>`;
     }
-    html += `</tbody></table></div>`;
+    html += `</tbody></table></div></div>`;
     const needs = E.rosterNeeds(t.roster);
     if (needs.gaps.length) {
       html += `<div class="card"><h3>Depth gaps</h3><p class="muted small">${needs.gaps.map((g) => `${g.bucket} ${g.have}/${g.need}`).join(" · ")}</p></div>`;
     }
     panel.innerHTML = html;
+    panel.querySelectorAll("th[data-sort]").forEach((th) => {
+      th.style.cursor = "pointer";
+      th.addEventListener("click", () => {
+        const key = th.dataset.sort;
+        if (rosterSort.key === key) rosterSort.dir *= -1;
+        else {
+          rosterSort.key = key;
+          rosterSort.dir = key === "pos" || key === "n" ? 1 : -1;
+        }
+        renderRoster();
+      });
+    });
   }
 
   function renderStandings() {
@@ -407,7 +465,7 @@
     if (step === "fa") {
       const fa = state.freeAgents.slice(0, 80);
       let html = `<div class="card"><h3>Free agency</h3>
-        <p class="muted small">Sign depth without overflowing the slim roster. CPU clubs already took a pass.</p>
+        <p class="muted small">Sign players under the 53-man limit and salary cap. CPU clubs already took a pass.</p>
         <div class="filters"><input id="faSearch" placeholder="Search FA…" /><select id="faBucket"><option value="">All positions</option>${E.BUCKET_ORDER.map((b)=>`<option value="${b}">${b}</option>`).join("")}</select></div>
         <div id="faList"></div></div>`;
       body.innerHTML = html;
@@ -415,7 +473,7 @@
         const q = ($("#faSearch").value || "").toLowerCase();
         const bucket = $("#faBucket").value;
         const needs = E.rosterNeeds(E.userTeam(state));
-        const maxCount = Object.values(E.STARTER_NEEDS).reduce((a, b) => a + b, 0) + Object.values(E.BACKUP_NEEDS).reduce((a, b) => a + b, 0);
+        const maxCount = state.rosterLimit || E.ROSTER_LIMIT || 53;
         let listHtml = "";
         for (const p of state.freeAgents) {
           if (bucket && p.bucket !== bucket) continue;
@@ -431,12 +489,9 @@
           const p = state.freeAgents.find((x) => x.id === id);
           if (!p) return;
           const team = E.userTeam(state);
-          if (team.roster.length >= maxCount) return toast("Roster full for this slim format");
+          if (team.roster.length >= maxCount) return toast("Roster full (53)");
           const sal = p.asking || p.salary;
           if (E.teamCapHit(team) + sal > state.salaryCap) return toast("Over the cap");
-          const have = team.roster.filter((x) => x.bucket === p.bucket).length;
-          const need = (E.STARTER_NEEDS[p.bucket] || 0) + (E.BACKUP_NEEDS[p.bucket] || 0);
-          if (have >= need) return toast(`Already full at ${p.bucket}`);
           team.roster.push({ ...p, salary: sal, yearsLeft: E.contractYears(p.ovr, p.age), asking: undefined, fromTeamId: undefined });
           team.roster = E.sortRoster(team.roster);
           E.recomputeRatings(team);
@@ -557,7 +612,7 @@
     const p = d.pool.find((x) => x.id === pid);
     if (!p) return;
     const team = E.userTeam(state);
-    const maxCount = Object.values(E.STARTER_NEEDS).reduce((a, b) => a + b, 0) + Object.values(E.BACKUP_NEEDS).reduce((a, b) => a + b, 0);
+    const maxCount = state.rosterLimit || E.ROSTER_LIMIT || 53;
     // If full at bucket, still allow but cut lowest ovr same bucket backup if needed
     const have = team.roster.filter((x) => x.bucket === p.bucket);
     const need = (E.STARTER_NEEDS[p.bucket] || 0) + (E.BACKUP_NEEDS[p.bucket] || 0);
