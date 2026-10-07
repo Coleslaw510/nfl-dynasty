@@ -52,8 +52,11 @@
     if (!state) return;
     const hit = E.teamCapHit(E.userTeam(state));
     const room = state.salaryCap - hit;
-    const roomCls = room < 0 ? "cap-over" : "cap-room";
-    $("#capChip").innerHTML = `<span class="cap-label">Cap</span><span class="cap-figures"><strong>${moneyShort(hit)}</strong><span class="cap-sep">/</span>${moneyShort(state.salaryCap)}</span><span class="${roomCls}">${room < 0 ? "" : "+"}${moneyShort(room)}</span>`;
+    const roomWord = room < 0 ? "over" : "left";
+    const roomAmt = moneyShort(Math.abs(room));
+    const el = $("#capChip");
+    el.textContent = `Cap ${moneyShort(hit)} · ${roomAmt} ${roomWord}`;
+    el.classList.toggle("is-over", room < 0);
     $("#yearChip").textContent = String(state.year);
   }
 

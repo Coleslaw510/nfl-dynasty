@@ -21,24 +21,24 @@ a { color: inherit; }
 
 .topbar {
   position: sticky; top: 0; z-index: 20;
-  display: flex; align-items: center; gap: 12px;
-  padding: 12px 16px; border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; border-bottom: 1px solid var(--line);
   background: rgba(11,15,20,.92); backdrop-filter: blur(10px);
+  flex-wrap: nowrap;
 }
-.brand { display: flex; align-items: center; gap: 10px; }
+.brand { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .brand-mark {
-  width: 40px; height: 40px; border-radius: 10px;
-  display: grid; place-items: center; font-weight: 700; font-size: 12px;
+  width: 32px; height: 32px; border-radius: 8px;
+  display: grid; place-items: center; font-weight: 700; font-size: 11px;
   background: linear-gradient(135deg, #1d4ed8, #0ea5e9); color: white;
 }
-.brand-title { font-weight: 700; line-height: 1.1; }
-.brand-sub { color: var(--muted); font-size: 12px; }
-.topbar-meta { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
-.topbar-actions { display: flex; gap: 8px; margin-left: auto; }
-.topbar-meta + .topbar-actions { margin-left: 0; }
+.brand-title { font-weight: 700; line-height: 1.1; font-size: 15px; }
+.brand-sub { color: var(--muted); font-size: 11px; }
+.topbar-meta { display: flex; gap: 8px; flex-wrap: nowrap; margin-left: auto; align-items: baseline; min-width: 0; }
+.topbar-actions { display: flex; gap: 4px; margin-left: 0; flex-shrink: 0; }
 .chip {
   background: var(--panel2); border: 1px solid var(--line);
-  border-radius: 999px; padding: 6px 10px; font-size: 12px; color: var(--muted);
+  border-radius: 999px; padding: 4px 8px; font-size: 11px; color: var(--muted);
 }
 .chip strong { color: var(--text); }
 
@@ -173,44 +173,45 @@ main { max-width: 1100px; margin: 0 auto; padding: 18px 16px 48px; }
   .game-row .score { grid-column: 2; }
 }
 
-/* Compact cap chip (avoid tall wrapping pill on mobile) */
-.chip-cap {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-  max-width: none;
-  padding: 5px 10px;
-  line-height: 1.15;
-}
-.chip-cap .cap-label {
-  text-transform: uppercase;
-  letter-spacing: .04em;
-  font-size: 10px;
+/* Tiny plain-text cap / year in the top bar (not a pill) */
+.cap-text {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  border-radius: 0;
+  font-size: 12px;
+  line-height: 1.2;
+  font-weight: 500;
   color: var(--muted);
-}
-.chip-cap .cap-figures {
-  color: var(--text);
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
-.chip-cap .cap-sep { color: var(--muted); margin: 0 1px; }
-.chip-cap .cap-room { color: var(--accent2); font-weight: 600; font-variant-numeric: tabular-nums; }
-.chip-cap .cap-over { color: var(--danger); font-weight: 600; font-variant-numeric: tabular-nums; }
-#yearChip { white-space: nowrap; }
-.topbar-meta {
-  flex-wrap: nowrap;
-  align-items: center;
-  gap: 6px;
-  margin-left: auto;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
+.cap-text.is-over { color: var(--danger); }
+.year-text {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--muted);
+  white-space: nowrap;
+  opacity: .85;
+  flex-shrink: 0;
 }
-.topbar { gap: 8px; }
 @media (max-width: 640px) {
   .brand-sub { display: none; }
-  .brand-mark { width: 34px; height: 34px; }
-  .chip-cap { padding: 4px 8px; font-size: 11px; }
-  .topbar-actions .btn { padding: 8px 10px; }
+  .brand-mark { width: 28px; height: 28px; font-size: 10px; }
+  .brand-title { font-size: 14px; }
+  .cap-text { font-size: 11px; }
+  .year-text { font-size: 10px; }
+  .topbar-actions .btn { padding: 4px 8px; font-size: 12px; }
 }
 
 .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
