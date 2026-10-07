@@ -2,7 +2,7 @@
 (function (global) {
   "use strict";
 
-  const SAVE_KEY = "nfl-dynasty-v5";
+  const SAVE_KEY = "nfl-dynasty-v6";
   const STARTER_NEEDS = { QB: 1, RB: 1, WR: 3, TE: 1, OL: 5, EDGE: 2, DL: 2, LB: 3, DB: 4, K: 1, P: 1 };
   const BACKUP_NEEDS = { QB: 2, RB: 3, WR: 3, TE: 2, OL: 4, EDGE: 2, DL: 3, LB: 3, DB: 6, K: 0, P: 0, LS: 1 };
   const BUCKET_ORDER = ["QB", "RB", "WR", "TE", "OL", "EDGE", "DL", "LB", "DB", "K", "P", "LS"];
@@ -817,6 +817,271 @@
     };
   }
 
+  /* -------- Trades & extensions -------- */
+  function playerTradeValue(p) {
+    if (!p) return 0;
+    let v = Math.pow(Math.max(48, p.ovr | 0), 2.2);
+    const age = p.age || 25;
+    if (age <= 23) v *= 1.22;
+    else if (age <= 26) v *= 1.12;
+    else if (age <= 28) v *= 1.04;
+    else if (age >= 34) v *= 0.62;
+    else if (age >= 32) v *= 0.78;
+    else if (age >= 30) v *= 0.9;
+    const years = p.yearsLeft == null ? 1 : (p.yearsLeft | 0);
+    if (years >= 4) v *= 1.08;
+    else if (years >= 2) v *= 1.03;
+    else if (years <= 0) v *= 0.88;
+    // Elite premium
+    if (p.ovr >= 92) v *= 1.15;
+    else if (p.ovr >= 88) v *= 1.08;
+    return v;
+  }
+
+  function pickTradeValue(overall) {
+    const o = Math.max(1, overall | 0);
+    // Rough Jimmy Johnson-style curve
+    return 28000 / Math.pow(o + 0.5, 0.92);
+  }
+
+  function packageTradeValue(state, playerIds, pickOveralls) {
+    let v = 0;
+    for (const id of playerIds || []) {
+      // search all teams
+      let found = null;
+      for (const t of state.teams) {
+        found = t.roster.find((p) => p.id === id);
+        if (found) break;
+      }
+      if (found) v += playerTradeValue(found);
+    }
+    for (const ov of pickOveralls || []) v += pickTradeValue(ov);
+    return v;
+  }
+
+  /**
+   * Evaluate a trade from the AI partner's POV.
+   * User gives givePlayerIds/givePickOveralls; receives getPlayerIds/getPickOveralls from theirTeamId.
+   */
+  function evaluateTrade(state, offer) {
+    const theirId = offer.theirTeamId;
+    const them = state.teamsById[theirId];
+    const us = userTeam(state);
+    if (!them || !us) return { ok: false, reason: "Invalid team" };
+    if (theirId === state.userTeamId) return { ok: false, reason: "Pick another team" };
+
+    const giveIds = (offer.givePlayerIds || []).map(Number);
+    const getIds = (offer.getPlayerIds || []).map(Number);
+    const givePicks = (offer.givePickOveralls || []).map(Number);
+    const getPicks = (offer.getPickOveralls || []).map(Number);
+
+    if (!giveIds.length && !getIds.length && !givePicks.length && !getPicks.length) {
+      return { ok: false, reason: "Empty offer" };
+    }
+    if (giveIds.length + givePicks.length === 0) return { ok: false, reason: "Offer something" };
+    if (getIds.length + getPicks.length === 0) return { ok: false, reason: "Ask for something" };
+    if (giveIds.length > 3 || getIds.length > 3) return { ok: false, reason: "Max 3 players per side" };
+    if (givePicks.length > 2 || getPicks.length > 2) return { ok: false, reason: "Max 2 picks per side" };
+
+    // Validate ownership
+    for (const id of giveIds) {
+      if (!us.roster.some((p) => p.id === id)) return { ok: false, reason: "You don't own that player" };
+    }
+    for (const id of getIds) {
+      if (!them.roster.some((p) => p.id === id)) return { ok: false, reason: "They don't own that player" };
+    }
+
+    const d = state.draft;
+    if (givePicks.length || getPicks.length) {
+      if (!d || !d.picks) return { ok: false, reason: "Picks only tradable during the draft" };
+      for (const ov of givePicks) {
+        const slot = d.picks.find((p) => p.overall === ov);
+        if (!slot || slot.playerId || slot.overall <= d.pickIndex) return { ok: false, reason: "Invalid pick you're offering" };
+        if (slot.ownerId !== state.userTeamId) return { ok: false, reason: "You don't own that pick" };
+      }
+      for (const ov of getPicks) {
+        const slot = d.picks.find((p) => p.overall === ov);
+        if (!slot || slot.playerId || slot.overall <= d.pickIndex) return { ok: false, reason: "Invalid pick you're asking for" };
+        if (slot.ownerId !== theirId) return { ok: false, reason: "They don't own that pick" };
+      }
+    }
+
+    // Roster space after swap
+    const limit = state.rosterLimit || ROSTER_LIMIT;
+    const ourNet = getIds.length - giveIds.length;
+    const theirNet = giveIds.length - getIds.length;
+    if (us.roster.length + ourNet > limit) return { ok: false, reason: "You need roster space — cut first" };
+    if (them.roster.length + theirNet > limit) return { ok: false, reason: "They have no roster space" };
+
+    // Cap after salary swap
+    const giveSal = giveIds.reduce((s, id) => s + (us.roster.find((p) => p.id === id).salary || 0), 0);
+    const getSal = getIds.reduce((s, id) => s + (them.roster.find((p) => p.id === id).salary || 0), 0);
+    if (teamCapHit(us) - giveSal + getSal > state.salaryCap + 2_000_000) {
+      return { ok: false, reason: "That deal blows your cap" };
+    }
+    if (teamCapHit(them) - getSal + giveSal > state.salaryCap + 5_000_000) {
+      return { ok: false, reason: "They can't fit the salaries" };
+    }
+
+    // Don't strip their only QB
+    const theirQBs = them.roster.filter((p) => p.bucket === "QB");
+    const givingTheirQB = getIds.filter((id) => {
+      const p = them.roster.find((x) => x.id === id);
+      return p && p.bucket === "QB";
+    }).length;
+    const gettingQB = giveIds.some((id) => {
+      const p = us.roster.find((x) => x.id === id);
+      return p && p.bucket === "QB";
+    });
+    if (theirQBs.length - givingTheirQB + (gettingQB ? 1 : 0) < 1 && givingTheirQB > 0) {
+      return { ok: false, reason: "They won't trade their only QB" };
+    }
+
+    const weGive = packageTradeValue(state, giveIds, givePicks); // value they receive
+    const weGet = packageTradeValue(state, getIds, getPicks); // value they lose
+    // Need bonus if we're sending a player at a gap position
+    const gaps = new Set(rosterNeeds(them.roster).gaps.map((g) => g.bucket));
+    let needBonus = 0;
+    for (const id of giveIds) {
+      const p = us.roster.find((x) => x.id === id);
+      if (p && gaps.has(p.bucket)) needBonus += 0.06;
+    }
+    const threshold = 0.94 - Math.min(0.12, needBonus);
+    const ratio = weGet > 0 ? weGive / weGet : (weGive > 0 ? 99 : 0);
+    const accept = weGive >= weGet * threshold;
+
+    return {
+      ok: true,
+      accept,
+      reason: accept
+        ? "Deal accepted"
+        : (ratio < 0.75 ? "Way too light — add more value" : ratio < threshold ? "Close, but they want a bit more" : "Rejected"),
+      theirReceive: weGive,
+      theirGive: weGet,
+      ratio,
+      threshold
+    };
+  }
+
+  function executeTrade(state, offer) {
+    const ev = evaluateTrade(state, offer);
+    if (!ev.ok || !ev.accept) return ev;
+
+    const us = userTeam(state);
+    const them = state.teamsById[offer.theirTeamId];
+    const giveIds = (offer.givePlayerIds || []).map(Number);
+    const getIds = (offer.getPlayerIds || []).map(Number);
+    const givePicks = (offer.givePickOveralls || []).map(Number);
+    const getPicks = (offer.getPickOveralls || []).map(Number);
+
+    const movingOut = [];
+    const movingIn = [];
+    us.roster = us.roster.filter((p) => {
+      if (giveIds.includes(p.id)) { movingOut.push(p); return false; }
+      return true;
+    });
+    them.roster = them.roster.filter((p) => {
+      if (getIds.includes(p.id)) { movingIn.push(p); return false; }
+      return true;
+    });
+    for (const p of movingIn) us.roster.push(p);
+    for (const p of movingOut) them.roster.push(p);
+    us.roster = sortRoster(us.roster);
+    them.roster = sortRoster(them.roster);
+    recomputeRatings(us);
+    recomputeRatings(them);
+
+    const d = state.draft;
+    if (d && d.picks) {
+      for (const ov of givePicks) {
+        const slot = d.picks.find((p) => p.overall === ov);
+        if (slot) slot.ownerId = them.id;
+      }
+      for (const ov of getPicks) {
+        const slot = d.picks.find((p) => p.overall === ov);
+        if (slot) slot.ownerId = us.id;
+      }
+    }
+
+    state.tradeLog = state.tradeLog || [];
+    state.tradeLog.push({
+      year: state.year,
+      week: state.week,
+      theirTeamId: them.id,
+      gave: movingOut.map((p) => ({ id: p.id, n: p.n, pos: p.pos, ovr: p.ovr })),
+      got: movingIn.map((p) => ({ id: p.id, n: p.n, pos: p.pos, ovr: p.ovr })),
+      givePicks, getPicks
+    });
+    return { ...ev, executed: true, gave: movingOut, got: movingIn };
+  }
+
+  /** Mid-contract extension — rewrite yearsLeft + AAV to a new deal. */
+  function extendContract(state, teamId, playerId, years) {
+    const team = state.teamsById[teamId];
+    if (!team) return { ok: false, reason: "Team not found" };
+    const p = team.roster.find((x) => x.id === playerId);
+    if (!p) return { ok: false, reason: "Player not found" };
+    const remaining = p.yearsLeft == null ? 0 : (p.yearsLeft | 0);
+    const opts = yearOptionsFor(p);
+    const y = clamp(years | 0, opts[0], opts[opts.length - 1]);
+    if (y < remaining) {
+      return { ok: false, reason: "Can't shorten via extension — use cut or wait for expiry" };
+    }
+    // Market AAV; mild premium if locking in early with years still on deal
+    const market = salaryFor(p.ovr, p.age, p.exp);
+    const premium = remaining >= 2 ? 1.04 : remaining === 1 ? 1.02 : 1.0;
+    const asking = Math.round(market * premium / 50000) * 50000;
+    const terms = contractTerms({ ...p, asking }, y);
+    const oldSal = p.salary || 0;
+    if (teamCapHit(team) - oldSal + terms.aav > state.salaryCap) {
+      return { ok: false, reason: "Over the cap for that extension" };
+    }
+    p.salary = terms.aav;
+    p.yearsLeft = terms.years;
+    return { ok: true, player: p, terms, previousYears: remaining, previousSalary: oldSal };
+  }
+
+  /**
+   * After the user signs an FA, rival teams snatch 1–3 other targets off the board.
+   * Returns list of { teamId, player }.
+   */
+  function cpuSnatchAfterUserSign(state, rng, justSignedId) {
+    const limit = state.rosterLimit || ROSTER_LIMIT;
+    const taken = [];
+    let snatches = 1;
+    if (rng() < 0.55) snatches++;
+    if (rng() < 0.28) snatches++;
+    const pool = (state.freeAgents || []).filter((p) => p.id !== justSignedId).slice().sort((a, b) => b.ovr - a.ovr);
+    const teams = state.teams.filter((t) => t.id !== state.userTeamId).slice();
+    // shuffle teams
+    for (let i = teams.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      const tmp = teams[i]; teams[i] = teams[j]; teams[j] = tmp;
+    }
+    for (const cand of pool) {
+      if (taken.length >= snatches) break;
+      // Elites almost always get snatched; depth pieces sometimes
+      const hunger = cand.ovr >= 85 ? 0.92 : cand.ovr >= 78 ? 0.7 : cand.ovr >= 72 ? 0.45 : 0.22;
+      if (rng() > hunger) continue;
+      for (const team of teams) {
+        if (team.roster.length >= limit) continue;
+        const sal = cand.asking || cand.salary || salaryFor(cand.ovr, cand.age, cand.exp);
+        if (teamCapHit(team) + sal > state.salaryCap) continue;
+        const needs = rosterNeeds(team.roster).gaps.map((g) => g.bucket);
+        const fitsNeed = !needs.length || needs.includes(cand.bucket) || cand.ovr >= 82;
+        if (!fitsNeed && rng() > 0.25) continue;
+        const years = contractYears(cand.ovr, cand.age);
+        team.roster.push({ ...cand, salary: sal, yearsLeft: years, asking: undefined, fromTeamId: undefined });
+        team.roster = sortRoster(team.roster);
+        recomputeRatings(team);
+        state.freeAgents = state.freeAgents.filter((x) => x.id !== cand.id);
+        taken.push({ teamId: team.id, player: { id: cand.id, n: cand.n, pos: cand.pos, ovr: cand.ovr } });
+        break;
+      }
+    }
+    return taken;
+  }
+
   /* -------- State bootstrap -------- */
   function createState(league, userTeamId) {
     const teams = clone(league.teams);
@@ -832,7 +1097,7 @@
     const records = {};
     for (const t of teams) records[t.id] = emptyRecord();
     return {
-      version: 5,
+      version: 6,
       year,
       week: 1,
       phase: "regular", // regular | playoffs | recap | offseason
@@ -997,6 +1262,8 @@
     generateDraftClass, draftOrder, buildDraftSlots, currentDraftSlot, userOwnsCurrentPick,
     tradeDraftPicks, assignDraftPick, cpuDraftOnePick, runCpuDraftPicks, initDraftState,
     yearOptionsFor, contractTerms, releasePlayer, ensureRosterRoom,
+    playerTradeValue, pickTradeValue, packageTradeValue, evaluateTrade, executeTrade,
+    extendContract, cpuSnatchAfterUserSign,
     startNextSeason, finalizeSeason
   };
 })(window);

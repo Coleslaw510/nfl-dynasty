@@ -375,3 +375,32 @@ main { max-width: 1100px; margin: 0 auto; padding: 18px 16px 48px; }
   .trade-grid { grid-template-columns: 1fr; }
   .draft-log-row { grid-template-columns: 40px 40px 1fr; }
 }
+
+/* Trade center */
+.trade-board {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+}
+.trade-side .trade-player-list {
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: 360px; overflow: auto;
+}
+.trade-player {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  width: 100%; text-align: left;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: #fff; padding: 8px 10px; cursor: pointer;
+  color: var(--text); font: inherit;
+}
+.trade-player:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.trade-player.selected {
+  border-color: var(--accent); background: #e8f0ff;
+}
+.trade-player .tp-main { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.trade-meter { margin-bottom: 10px; font-size: 14px; }
+.good { color: var(--good); font-weight: 600; }
+.warn { color: var(--warn); font-weight: 600; }
+span.bad { color: var(--bad); font-weight: 600; }
+.extend-row td { background: #f8fafc; }
+@media (max-width: 720px) {
+  .trade-board { grid-template-columns: 1fr; }
+}

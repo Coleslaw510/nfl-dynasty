@@ -13,6 +13,13 @@
   let resignSignId = null;
   let draftTradeMy = null;
   let draftTradeTheir = null;
+  let tradePartnerId = null;
+  let tradeGiveIds = [];
+  let tradeGetIds = [];
+  let tradeGivePicks = [];
+  let tradeGetPicks = [];
+  let extendPlayerId = null;
+  let extendYearsMap = {};
 
   function toast(msg) {
     const el = document.createElement("div");
@@ -213,7 +220,7 @@
   /* -------- Season UI -------- */
   function syncTabPanels() {
     $$(".tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === activeTab));
-    ["schedule", "box", "roster", "standings", "cap", "history"].forEach((t) => {
+    ["schedule", "box", "roster", "trade", "standings", "cap", "history"].forEach((t) => {
       const p = $(`#panel-${t}`);
       if (p) p.hidden = t !== activeTab;
     });
@@ -277,6 +284,7 @@
     if (activeTab === "schedule") renderSchedule();
     if (activeTab === "box") renderBoxPanel();
     if (activeTab === "roster") renderRoster();
+    if (activeTab === "trade") renderTrade();
     if (activeTab === "standings") renderStandings();
     if (activeTab === "cap") renderCap();
     if (activeTab === "history") renderHistory();
@@ -374,6 +382,17 @@
   let rosterFilter = "ALL"; // ALL | bucket code | POS:XX
 
   function playerRowHtml(p) {
+    const open = extendPlayerId === p.id;
+    let extra = "";
+    if (open) {
+      const suggested = Math.max(E.contractYears(p.ovr, p.age), (p.yearsLeft | 0) || 1);
+      const chosen = extendYearsMap[p.id] || suggested;
+      extra = `<tr class="extend-row"><td colspan="7">${yearPickerHtml(p, chosen, `data-ext-years="${p.id}"`)}
+        <div class="actions" style="margin-top:8px">
+          <button type="button" class="btn btn-sm btn-primary" data-ext-confirm="${p.id}">Confirm extension</button>
+          <button type="button" class="btn btn-sm btn-ghost" data-ext-cancel="${p.id}">Cancel</button>
+        </div></td></tr>`;
+    }
     return `<tr>
       <td>${p.pos}</td>
       <td>${p.n}${p.j ? ` <span class="muted small">#${p.j}</span>` : ""}</td>
@@ -381,7 +400,8 @@
       <td>${p.age}</td>
       <td>${p.yearsLeft}</td>
       <td>${E.money(p.salary)}</td>
-    </tr>`;
+      <td><button type="button" class="btn btn-sm btn-ghost" data-extend="${p.id}">${open ? "Hide" : "Extend"}</button></td>
+    </tr>${extra}`;
   }
 
   function sortPlayers(list) {
@@ -424,6 +444,7 @@
       <th data-sort="age">Age${mark("age")}</th>
       <th data-sort="yearsLeft">Yrs${mark("yearsLeft")}</th>
       <th data-sort="salary">Salary${mark("salary")}</th>
+      <th></th>
     </tr></thead>`;
 
     let html = `<div class="card roster-card">
@@ -462,7 +483,7 @@
       html += `<div class="pos-group">
         <div class="pos-group-head"><strong>${label}</strong><span class="muted small">${group.length}</span></div>
         <div class="table-wrap"><table class="table sortable">${th()}<tbody>`;
-      if (!group.length) html += `<tr><td colspan="6" class="muted">No players at this position.</td></tr>`;
+      if (!group.length) html += `<tr><td colspan="7" class="muted">No players at this position.</td></tr>`;
       for (const p of group) html += playerRowHtml(p);
       html += `</tbody></table></div></div>`;
     }
@@ -490,6 +511,221 @@
         }
         renderRoster();
       });
+    });
+    wireExtendControls(panel, () => renderRoster());
+  }
+
+  function wireExtendControls(root, redraw) {
+    root.querySelectorAll("[data-extend]").forEach((b) => b.addEventListener("click", () => {
+      const id = +b.dataset.extend;
+      extendPlayerId = extendPlayerId === id ? null : id;
+      redraw();
+    }));
+    root.querySelectorAll("[data-ext-years]").forEach((b) => b.addEventListener("click", () => {
+      const id = +b.dataset.extYears;
+      extendYearsMap[id] = +b.dataset.years;
+      extendPlayerId = id;
+      redraw();
+    }));
+    root.querySelectorAll("[data-ext-cancel]").forEach((b) => b.addEventListener("click", () => {
+      extendPlayerId = null;
+      redraw();
+    }));
+    root.querySelectorAll("[data-ext-confirm]").forEach((b) => b.addEventListener("click", () => {
+      doExtend(+b.dataset.extConfirm, redraw);
+    }));
+  }
+
+  function doExtend(id, redraw) {
+    const team = E.userTeam(state);
+    const p = team.roster.find((x) => x.id === id);
+    if (!p) return;
+    const suggested = Math.max(E.contractYears(p.ovr, p.age), (p.yearsLeft | 0) || 1);
+    const years = extendYearsMap[id] || suggested;
+    const res = E.extendContract(state, state.userTeamId, id, years);
+    if (!res.ok) return toast(res.reason);
+    extendPlayerId = null;
+    E.save(state);
+    refreshMeta();
+    redraw();
+    toast(`Extended ${p.n} · ${res.terms.years}y / ${E.money(res.terms.aav)}`);
+  }
+
+  function renderTrade() {
+    const panel = $("#panel-trade");
+    if (!panel) return;
+    panel.innerHTML = tradePanelHtml(false);
+    wireTradePanel(panel, () => renderTrade());
+  }
+
+  function tradePanelHtml(isOffseason) {
+    const us = E.userTeam(state);
+    const partners = state.teams.filter((t) => t.id !== state.userTeamId).slice().sort((a, b) => a.name.localeCompare(b.name));
+    if (!tradePartnerId || !state.teamsById[tradePartnerId]) {
+      tradePartnerId = partners[0] ? partners[0].id : null;
+    }
+    const them = tradePartnerId ? state.teamsById[tradePartnerId] : null;
+    const d = state.draft;
+    const draftOpen = !!(d && d.picks && d.stage !== "done");
+
+    let html = `<div class="card"><h3>Trade center</h3>
+      <p class="muted small">Swap up to 3 players per side${draftOpen ? " and up to 2 draft picks" : ""}. AI accepts or rejects based on value + need.</p>
+      <label class="roster-filter" style="display:flex;flex-direction:column;gap:4px;max-width:280px">
+        <span class="muted small">Trade partner</span>
+        <select id="tradePartner">`;
+    for (const t of partners) {
+      html += `<option value="${t.id}"${t.id === tradePartnerId ? " selected" : ""}>${escapeHtml(t.name)} (${t.abbr}) · ${t.ratings.ovr} OVR</option>`;
+    }
+    html += `</select></label></div>`;
+
+    if (!them) {
+      html += `<div class="card"><p class="muted">No partner selected.</p></div>`;
+      return html;
+    }
+
+    const offer = {
+      theirTeamId: them.id,
+      givePlayerIds: tradeGiveIds,
+      getPlayerIds: tradeGetIds,
+      givePickOveralls: tradeGivePicks,
+      getPickOveralls: tradeGetPicks
+    };
+    const preview = (tradeGiveIds.length || tradeGetIds.length || tradeGivePicks.length || tradeGetPicks.length)
+      ? E.evaluateTrade(state, offer)
+      : null;
+
+    html += `<div class="trade-board">`;
+    html += tradeSideHtml("You send", us, tradeGiveIds, "give", true);
+    html += tradeSideHtml("You receive", them, tradeGetIds, "get", false);
+    html += `</div>`;
+
+    if (draftOpen) {
+      html += `<div class="trade-board">`;
+      html += tradePicksHtml("Your picks to send", d, state.userTeamId, tradeGivePicks, "give-pick");
+      html += tradePicksHtml("Their picks you want", d, them.id, tradeGetPicks, "get-pick");
+      html += `</div>`;
+    }
+
+    let meter = `<span class="muted">Select players to build an offer.</span>`;
+    if (preview) {
+      if (!preview.ok) meter = `<span class="bad">${escapeHtml(preview.reason)}</span>`;
+      else if (preview.accept) meter = `<span class="good">Likely accepted</span> · value ratio ${(preview.ratio).toFixed(2)}`;
+      else meter = `<span class="warn">${escapeHtml(preview.reason)}</span> · ratio ${(preview.ratio).toFixed(2)}`;
+    }
+    html += `<div class="card">
+      <div class="trade-meter">${meter}</div>
+      <div class="actions">
+        <button type="button" class="btn btn-primary" id="btnProposeTrade">Propose trade</button>
+        <button type="button" class="btn btn-ghost" id="btnClearTrade">Clear</button>
+      </div>
+    </div>`;
+
+    const log = (state.tradeLog || []).slice(-6).reverse();
+    if (log.length) {
+      html += `<div class="card"><h3>Recent trades</h3>`;
+      for (const tr of log) {
+        const gave = (tr.gave || []).map((p) => p.n).join(", ") || (tr.givePicks || []).map((n) => `#${n}`).join(", ") || "—";
+        const got = (tr.got || []).map((p) => p.n).join(", ") || (tr.getPicks || []).map((n) => `#${n}`).join(", ") || "—";
+        html += `<div class="muted small" style="padding:6px 0;border-top:1px solid var(--line)">
+          W${tr.week || "—"} ${escapeHtml(teamLabel(tr.theirTeamId))}: sent ${escapeHtml(gave)} · got ${escapeHtml(got)}
+        </div>`;
+      }
+      html += `</div>`;
+    }
+    return html;
+  }
+
+  function tradeSideHtml(title, team, selectedIds, side, isUser) {
+    const sel = new Set(selectedIds.map(Number));
+    const list = team.roster.slice().sort((a, b) => b.ovr - a.ovr);
+    let html = `<div class="card trade-side"><h3>${escapeHtml(title)} <span class="muted small">${escapeHtml(team.abbr)}</span></h3>
+      <p class="muted small">Tap up to 3 · value uses OVR, age, and contract.</p><div class="trade-player-list">`;
+    for (const p of list) {
+      const on = sel.has(p.id);
+      html += `<button type="button" class="trade-player ${on ? "selected" : ""}" data-trade-side="${side}" data-pid="${p.id}">
+        <span class="tp-main"><strong>${escapeHtml(p.n)}</strong> ${escapeHtml(p.pos)} ${ovrBadge(p.ovr)}</span>
+        <span class="muted small">${p.age}y · ${p.yearsLeft}yr · ${E.money(p.salary)}</span>
+      </button>`;
+    }
+    html += `</div></div>`;
+    return html;
+  }
+
+  function tradePicksHtml(title, d, ownerId, selected, side) {
+    const sel = new Set(selected.map(Number));
+    const picks = d.picks.filter((p) => p.ownerId === ownerId && !p.playerId && p.overall > d.pickIndex);
+    let html = `<div class="card trade-side"><h3>${escapeHtml(title)}</h3><div class="trade-player-list">`;
+    if (!picks.length) html += `<p class="muted small">No available picks.</p>`;
+    for (const p of picks) {
+      const on = sel.has(p.overall);
+      html += `<button type="button" class="trade-player ${on ? "selected" : ""}" data-trade-side="${side}" data-pick="${p.overall}">
+        <span class="tp-main"><strong>#${p.overall}</strong> R${p.round} P${p.pickInRound}</span>
+        <span class="muted small">via ${escapeHtml(teamLabel(p.originalTeamId))}</span>
+      </button>`;
+    }
+    html += `</div></div>`;
+    return html;
+  }
+
+  function wireTradePanel(root, redraw) {
+    const partner = root.querySelector("#tradePartner");
+    if (partner) partner.addEventListener("change", () => {
+      tradePartnerId = partner.value;
+      tradeGetIds = [];
+      tradeGetPicks = [];
+      redraw();
+    });
+    root.querySelectorAll("[data-trade-side]").forEach((b) => b.addEventListener("click", () => {
+      const side = b.dataset.tradeSide;
+      if (b.dataset.pid) {
+        const id = +b.dataset.pid;
+        const arr = side === "give" ? tradeGiveIds : tradeGetIds;
+        const idx = arr.indexOf(id);
+        if (idx >= 0) arr.splice(idx, 1);
+        else {
+          if (arr.length >= 3) return toast("Max 3 players per side");
+          arr.push(id);
+        }
+        if (side === "give") tradeGiveIds = arr.slice();
+        else tradeGetIds = arr.slice();
+      } else if (b.dataset.pick) {
+        const ov = +b.dataset.pick;
+        const arr = side === "give-pick" ? tradeGivePicks : tradeGetPicks;
+        const idx = arr.indexOf(ov);
+        if (idx >= 0) arr.splice(idx, 1);
+        else {
+          if (arr.length >= 2) return toast("Max 2 picks per side");
+          arr.push(ov);
+        }
+        if (side === "give-pick") tradeGivePicks = arr.slice();
+        else tradeGetPicks = arr.slice();
+      }
+      redraw();
+    }));
+    const clear = root.querySelector("#btnClearTrade");
+    if (clear) clear.addEventListener("click", () => {
+      tradeGiveIds = []; tradeGetIds = []; tradeGivePicks = []; tradeGetPicks = [];
+      redraw();
+    });
+    const propose = root.querySelector("#btnProposeTrade");
+    if (propose) propose.addEventListener("click", () => {
+      const offer = {
+        theirTeamId: tradePartnerId,
+        givePlayerIds: tradeGiveIds,
+        getPlayerIds: tradeGetIds,
+        givePickOveralls: tradeGivePicks,
+        getPickOveralls: tradeGetPicks
+      };
+      const res = E.executeTrade(state, offer);
+      if (!res.ok) return toast(res.reason);
+      if (!res.accept) return toast(res.reason || "Trade rejected");
+      tradeGiveIds = []; tradeGetIds = []; tradeGivePicks = []; tradeGetPicks = [];
+      E.save(state);
+      refreshMeta();
+      redraw();
+      const got = (res.got || []).map((p) => p.n).join(", ") || "picks";
+      const gave = (res.gave || []).map((p) => p.n).join(", ") || "picks";
+      toast(`Trade accepted · got ${got} · sent ${gave}`);
     });
   }
 
@@ -533,13 +769,27 @@
       <div>${E.money(hit)} of ${E.money(state.salaryCap)} · room ${E.money(room)}</div>
       <div class="bar"><span style="width:${pct}%;background:${room < 0 ? "var(--danger)" : "var(--accent)"}"></span></div>
       <p class="muted small" style="margin-top:8px">Simplified dynasty contracts (not real NFL deals). Cap rises ~2%/year.</p></div>`;
-    html += `<div class="card"><h3>Contracts</h3><table class="table"><thead><tr><th>Player</th><th>OVR</th><th>Age</th><th>Left</th><th>AAV</th></tr></thead><tbody>`;
+    html += `<div class="card"><h3>Contracts</h3>
+      <p class="muted small">Extend anyone before their deal expires — rewrites years + AAV at market.</p>
+      <table class="table"><thead><tr><th>Player</th><th>OVR</th><th>Age</th><th>Left</th><th>AAV</th><th></th></tr></thead><tbody>`;
     const bySal = t.roster.slice().sort((a, b) => b.salary - a.salary);
     for (const p of bySal) {
-      html += `<tr><td>${p.n}</td><td>${ovrBadge(p.ovr)}</td><td>${p.age}</td><td>${p.yearsLeft}y</td><td>${E.money(p.salary)}</td></tr>`;
+      const open = extendPlayerId === p.id;
+      html += `<tr><td>${escapeHtml(p.n)}</td><td>${ovrBadge(p.ovr)}</td><td>${p.age}</td><td>${p.yearsLeft}y</td><td>${E.money(p.salary)}</td>
+        <td><button type="button" class="btn btn-sm btn-ghost" data-extend="${p.id}">${open ? "Hide" : "Extend"}</button></td></tr>`;
+      if (open) {
+        const suggested = Math.max(E.contractYears(p.ovr, p.age), (p.yearsLeft | 0) || 1);
+        const chosen = extendYearsMap[p.id] || suggested;
+        html += `<tr class="extend-row"><td colspan="6">${yearPickerHtml(p, chosen, `data-ext-years="${p.id}"`)}
+          <div class="actions" style="margin-top:8px">
+            <button type="button" class="btn btn-sm btn-primary" data-ext-confirm="${p.id}">Confirm extension</button>
+            <button type="button" class="btn btn-sm btn-ghost" data-ext-cancel="${p.id}">Cancel</button>
+          </div></td></tr>`;
+      }
     }
     html += `</tbody></table></div>`;
     panel.innerHTML = html;
+    wireExtendControls(panel, () => renderCap());
   }
 
   function renderHistory() {
@@ -667,6 +917,13 @@
       btn.textContent = stepContinueLabel(step);
       return;
     }
+    if (osTab === "trade") {
+      const body = $("#osBody");
+      body.innerHTML = tradePanelHtml(true);
+      wireTradePanel(body, () => renderOffseason());
+      btn.textContent = stepContinueLabel(step);
+      return;
+    }
     if (osTab === "cap") {
       renderOsCap();
       btn.textContent = stepContinueLabel(step);
@@ -700,11 +957,25 @@
       <p class="muted small">Sorted by OVR (lowest first). Cutting frees a spot immediately.</p>`;
     const sorted = team.roster.slice().sort((a, b) => a.ovr - b.ovr || b.salary - a.salary);
     for (const p of sorted) {
-      html += `<div class="list-actions" style="padding:8px 0;border-top:1px solid var(--line)">
-        <div><strong>${escapeHtml(p.n)}</strong> ${escapeHtml(p.pos)} ${ovrBadge(p.ovr)} · age ${p.age}
-          <div class="muted small">${E.money(p.salary)} · ${p.yearsLeft}y left</div></div>
-        <button type="button" class="btn btn-sm btn-ghost danger" data-cut="${p.id}">Cut</button>
-      </div>`;
+      const open = extendPlayerId === p.id;
+      html += `<div class="sign-row" style="padding:8px 0;border-top:1px solid var(--line)">
+        <div class="list-actions">
+          <div><strong>${escapeHtml(p.n)}</strong> ${escapeHtml(p.pos)} ${ovrBadge(p.ovr)} · age ${p.age}
+            <div class="muted small">${E.money(p.salary)} · ${p.yearsLeft}y left</div></div>
+          <div class="actions">
+            <button type="button" class="btn btn-sm btn-ghost" data-extend="${p.id}">${open ? "Hide" : "Extend"}</button>
+            <button type="button" class="btn btn-sm btn-ghost danger" data-cut="${p.id}">Cut</button>
+          </div>
+        </div>`;
+      if (open) {
+        const suggested = Math.max(E.contractYears(p.ovr, p.age), (p.yearsLeft | 0) || 1);
+        const chosen = extendYearsMap[p.id] || suggested;
+        html += yearPickerHtml(p, chosen, `data-ext-years="${p.id}"`);
+        html += `<div class="actions" style="margin-top:8px">
+          <button type="button" class="btn btn-sm btn-primary" data-ext-confirm="${p.id}">Confirm extension</button>
+        </div>`;
+      }
+      html += `</div>`;
     }
     if (!sorted.length) html += `<p class="muted">Roster empty.</p>`;
     html += `</div>`;
@@ -718,6 +989,7 @@
       renderOffseason();
       toast(`Cut ${cut.n} · ${spotsLeft()} spots open`);
     }));
+    wireExtendControls(body, () => renderOffseason());
   }
 
   function renderOsCap() {
@@ -965,10 +1237,17 @@
     E.recomputeRatings(team);
     state.freeAgents = state.freeAgents.filter((x) => x.id !== id);
     faSignId = null;
+    const rng = E.mulberry32(E.hashSeed(state.rngSeed + ":fasnatch" + state.year + ":" + id + ":" + state.freeAgents.length));
+    const snatches = E.cpuSnatchAfterUserSign(state, rng, id);
     E.save(state);
     refreshMeta();
     renderOffseason();
-    toast(`Signed ${p.n} · ${terms.years}y / ${E.money(terms.aav)}`);
+    let msg = `Signed ${p.n} · ${terms.years}y / ${E.money(terms.aav)}`;
+    if (snatches.length) {
+      const bits = snatches.slice(0, 3).map((s) => `${teamLabel(s.teamId)} got ${s.player.n}`);
+      msg += ` · Also: ${bits.join(", ")}`;
+    }
+    toast(msg);
   }
 
   function beginDraft() {
@@ -990,15 +1269,15 @@
     if (d.stage === "preview") {
       let html = capacityBanner("Browse the board, trade picks, then start the draft.");
       html += `<div class="card"><h3>Draft preview · ${d.rounds} rounds</h3>
-        <p class="muted small">Your picks are highlighted. Trade up/down before the show starts.</p>`;
+        <p class="muted small">Your picks are highlighted. Trade up/down before the draft starts.</p>`;
       html += draftPicksStrip(d);
       html += draftTradePanel(d);
       html += `<div class="actions" style="margin-top:12px">
-        <button type="button" class="btn btn-primary" id="btnStartDraft">Start draft show</button>
+        <button type="button" class="btn btn-primary" id="btnStartDraft">Start draft</button>
       </div></div>`;
       html += prospectBoardHtml(d, 60, false);
       body.innerHTML = html;
-      btn.textContent = "Start draft show";
+      btn.textContent = "Start draft";
       wireDraftTrade(body);
       const start = $("#btnStartDraft");
       if (start) start.addEventListener("click", () => {
@@ -1217,7 +1496,7 @@
         osTab = "step";
         E.save(state);
         renderOffseason();
-        toast("Draft board is open — trade or start the show");
+        toast("Draft board is open — trade or start the draft");
         return;
       }
       if (step === "draft") {
