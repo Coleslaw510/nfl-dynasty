@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>NFL Dynasty</title>
-  <link rel="stylesheet" href="css/styles.css?v=4" />
+  <link rel="stylesheet" href="css/styles.css?v=5" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -83,6 +83,7 @@
 
       <nav class="tabs" role="tablist">
         <button type="button" class="tab active" data-tab="schedule">Schedule</button>
+        <button type="button" class="tab" data-tab="box">Box</button>
         <button type="button" class="tab" data-tab="roster">Roster</button>
         <button type="button" class="tab" data-tab="standings">Standings</button>
         <button type="button" class="tab" data-tab="cap">Cap / Contracts</button>
@@ -91,6 +92,7 @@
 
       <div class="tab-panels">
         <div class="panel active" id="panel-schedule"></div>
+        <div class="panel" id="panel-box" hidden></div>
         <div class="panel" id="panel-roster" hidden></div>
         <div class="panel" id="panel-standings" hidden></div>
         <div class="panel" id="panel-cap" hidden></div>
@@ -119,7 +121,7 @@
     <span>OVRs: TeamCrafters Madden 27 (10/1/26, mirrors EA ratings) · 2026 real schedule year 1 · ages from exp · contracts simplified</span>
   </footer>
 
-  <script src="js/engine.js?v=4"></script>
-  <script src="js/app.js?v=4"></script>
+  <script src="js/engine.js?v=5"></script>
+  <script src="js/app.js?v=5"></script>
 </body>
 </html>

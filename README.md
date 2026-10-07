@@ -16,9 +16,11 @@ Classic NFL dynasty sim (no all-time shop) — sibling to [CFB Season Sim](https
 - **Year 1 = real 2026 NFL regular-season schedule** (ESPN scoreboard API; 18 weeks with byes). Later seasons are generated with division opponents 2×.
 - NFL playoffs through Super Bowl
 - Offseason aging: improve through ~age 28, regress in the 30s, some retirements
-- Contract years decrement each offseason
+- Contract years decrement at season end (before Resign), so expirations actually appear
 - Roster tab sortable by Pos / Player / OVR / Age / Yrs / Salary
-- Clean tabbed UI: Schedule · Roster · Standings · Cap · History
+- Clean tabbed UI: Schedule · Box · Roster · Standings · Cap · History
+- CFB-style box scores + light theme (parity with CFB Season Sim)
+- Offseason pipeline: tick contracts → Resign → Free Agency → Draft → Progression
 
 ## Out of scope (for now)
 

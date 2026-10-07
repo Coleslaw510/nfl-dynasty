@@ -2,7 +2,7 @@
 (function (global) {
   "use strict";
 
-  const SAVE_KEY = "nfl-dynasty-v3";
+  const SAVE_KEY = "nfl-dynasty-v4";
   const STARTER_NEEDS = { QB: 1, RB: 1, WR: 3, TE: 1, OL: 5, EDGE: 2, DL: 2, LB: 3, DB: 4, K: 1, P: 1 };
   const BACKUP_NEEDS = { QB: 2, RB: 3, WR: 3, TE: 2, OL: 4, EDGE: 2, DL: 3, LB: 3, DB: 6, K: 0, P: 0, LS: 1 };
   const BUCKET_ORDER = ["QB", "RB", "WR", "TE", "OL", "EDGE", "DL", "LB", "DB", "K", "P", "LS"];
@@ -257,35 +257,96 @@
     return clamp(21.5 + (off - 78) * 0.42 - (def - 78) * 0.38 + homeBoost, 7, 45);
   }
 
+  function pickDepth(roster, bucket, idx) {
+    const list = (roster || []).filter((p) => p.bucket === bucket).sort((a, b) => b.ovr - a.ovr);
+    if (list[idx]) return list[idx];
+    const any = (roster || []).slice().sort((a, b) => b.ovr - a.ovr);
+    return any[Math.min(idx, Math.max(0, any.length - 1))] || { n: "Player", pos: bucket || "WR", ovr: 70 };
+  }
+
+  function formatTOP(minutes) {
+    const m = Math.floor(minutes);
+    const s = Math.floor((minutes - m) * 60);
+    return m + ":" + String(s).padStart(2, "0");
+  }
+
+  function yardsBundle(pts, off, def, rng) {
+    const passYds = Math.round(clamp(210 + (off - 78) * 3.2 - (def - 78) * 1.1 + (rng() - 0.5) * 90 + (pts - 22) * 2.2, 90, 420));
+    const rushYds = Math.round(clamp(115 + (off - 78) * 1.4 - (def - 78) * 0.7 + (rng() - 0.5) * 60 + (pts - 22) * 1.1, 40, 260));
+    const ypa = clamp(6.4 + (off - 78) * 0.035 + (rng() - 0.5) * 1.2, 4.8, 10.5);
+    const passAtt = clamp(Math.round(passYds / ypa + (rng() - 0.5) * 3), 18, 52);
+    const completions = clamp(Math.round(passAtt * (0.62 + (off - 78) * 0.0025 + (rng() - 0.5) * 0.07)), 9, passAtt - 1);
+    const rushAtt = clamp(Math.round(24 + rushYds / 12 + (rng() - 0.5) * 5), 16, 42);
+    const interceptions = Math.max(0, (rng() < 0.28 ? 1 : 0) + (rng() < 0.08 ? 1 : 0));
+    const fumblesLost = Math.max(0, (rng() < 0.22 ? 1 : 0));
+    return {
+      passYds, rushYds, totalYds: passYds + rushYds,
+      passAtt, completions, rushAtt,
+      interceptions, fumblesLost,
+      turnovers: interceptions + fumblesLost,
+      thirdDownConv: clamp(Math.round(4 + rng() * 8), 2, 13),
+      thirdDownAtt: clamp(Math.round(11 + rng() * 5), 10, 17),
+      timeOfPoss: null
+    };
+  }
+
+  function leadersFor(roster, yds, pts, rng) {
+    const qb = pickDepth(roster, "QB", 0);
+    const rb1 = pickDepth(roster, "RB", 0);
+    const rb2 = pickDepth(roster, "RB", 1);
+    const wr1 = pickDepth(roster, "WR", 0);
+    const wr2 = pickDepth(roster, "WR", 1);
+    const te1 = pickDepth(roster, "TE", 0);
+    const passTds = clamp(Math.round(pts / 10 + (rng() - 0.4)), 0, 5);
+    const rushTds = Math.max(0, Math.round(pts / 14) - Math.floor(passTds * 0.4));
+    const rush1 = Math.round(yds.rushYds * (0.55 + rng() * 0.2));
+    const rush2 = Math.max(8, yds.rushYds - rush1 - Math.round(rng() * 20));
+    const recYds = Math.round(yds.passYds * (0.28 + rng() * 0.15));
+    const recYds2 = Math.round(yds.passYds * (0.18 + rng() * 0.1));
+    const recP = rng() < 0.2 ? te1 : wr1;
+    return {
+      passing: { name: qb.n, comp: yds.completions, att: yds.passAtt, yds: yds.passYds, td: passTds, int: yds.interceptions },
+      rushing: [
+        { name: rb1.n, att: Math.round(yds.rushAtt * 0.55), yds: rush1, td: Math.min(rushTds, 2) },
+        { name: rb2.n, att: Math.max(3, yds.rushAtt - Math.round(yds.rushAtt * 0.55) - 4), yds: Math.max(0, rush2), td: Math.max(0, rushTds - 2) }
+      ],
+      receiving: [
+        { name: recP.n, rec: clamp(Math.round(3 + rng() * 6), 2, 10), yds: recYds, td: Math.min(passTds, 2) },
+        { name: wr2.n, rec: clamp(Math.round(2 + rng() * 5), 1, 8), yds: recYds2, td: Math.max(0, Math.min(passTds - 1, 1)) }
+      ]
+    };
+  }
+
   function simulateGame(homeTeam, awayTeam, rng, opts) {
     opts = opts || {};
     const hBoost = opts.neutral ? 0 : 1.8;
     const hExp = expectedPoints(homeTeam.ratings.off, awayTeam.ratings.def, hBoost);
     const aExp = expectedPoints(awayTeam.ratings.off, homeTeam.ratings.def, 0);
-    // Favorites win more vs big gaps (learned from CFB tuning)
     const gap = (homeTeam.ratings.ovr - awayTeam.ratings.ovr);
     let h = Math.round(hExp + (rng() - 0.5) * 14 + gap * 0.08);
     let a = Math.round(aExp + (rng() - 0.5) * 14 - gap * 0.08);
     h = clamp(h, 3, 55);
     a = clamp(a, 0, 55);
-    // NFL OT: one possession sudden death with equal chance after tie — no 10-pt OT losses
+    let ot = false;
     if (h === a) {
-      if (rng() < 0.55) {
-        // home scores FG or TD
-        h += rng() < 0.7 ? 3 : 6;
-      } else {
-        a += rng() < 0.7 ? 3 : 6;
-      }
+      ot = true;
+      if (rng() < 0.55) h += rng() < 0.7 ? 3 : 6;
+      else a += rng() < 0.7 ? 3 : 6;
     }
-    const homePass = Math.round(clamp(210 + (homeTeam.ratings.off - 78) * 3.2 + (rng() - 0.5) * 90, 90, 420));
-    const awayPass = Math.round(clamp(210 + (awayTeam.ratings.off - 78) * 3.2 + (rng() - 0.5) * 90, 90, 420));
-    const homeRush = Math.round(clamp(115 + (homeTeam.ratings.off - 78) * 1.4 + (rng() - 0.5) * 60, 40, 260));
-    const awayRush = Math.round(clamp(115 + (awayTeam.ratings.off - 78) * 1.4 + (rng() - 0.5) * 60, 40, 260));
+    const homeStats = yardsBundle(h, homeTeam.ratings.off, awayTeam.ratings.def, rng);
+    const awayStats = yardsBundle(a, awayTeam.ratings.off, homeTeam.ratings.def, rng);
+    const homePossMin = clamp(26 + (homeStats.rushAtt - awayStats.rushAtt) * 0.15 + (rng() - 0.5) * 4, 24, 36);
+    homeStats.timeOfPoss = formatTOP(homePossMin);
+    awayStats.timeOfPoss = formatTOP(60 - homePossMin);
+    const homeLeaders = leadersFor(homeTeam.roster, homeStats, h, rng);
+    const awayLeaders = leadersFor(awayTeam.roster, awayStats, a, rng);
     return {
-      homeScore: h, awayScore: a,
+      homeScore: h, awayScore: a, ot,
+      homeStats, awayStats, homeLeaders, awayLeaders,
+      // legacy compact stats for older UI bits
       stats: {
-        home: { pass: homePass, rush: homeRush },
-        away: { pass: awayPass, rush: awayRush }
+        home: { pass: homeStats.passYds, rush: homeStats.rushYds },
+        away: { pass: awayStats.passYds, rush: awayStats.rushYds }
       }
     };
   }
@@ -393,6 +454,9 @@
       for (const g of pending) {
         const res = simulateGame(state.teamsById[g.homeId], state.teamsById[g.awayId], rng, { neutral: g.kind === "SB" });
         g.homeScore = res.homeScore; g.awayScore = res.awayScore; g.stats = res.stats;
+        g.homeStats = res.homeStats; g.awayStats = res.awayStats;
+        g.homeLeaders = res.homeLeaders; g.awayLeaders = res.awayLeaders;
+        g.ot = res.ot;
       }
       return;
     }
@@ -439,13 +503,23 @@
   }
 
   /* -------- Offseason systems -------- */
+  /* Tick contract years at season end (before resign). Progression ages OVRs later. */
+  function tickContracts(state) {
+    for (const team of state.teams) {
+      for (const p of team.roster) {
+        const y = p.yearsLeft == null ? 1 : (p.yearsLeft | 0);
+        p.yearsLeft = Math.max(0, y - 1);
+      }
+    }
+  }
+
   function ageAndProgress(state, rng) {
     const log = [];
     for (const team of state.teams) {
       for (const p of team.roster) {
         p.age += 1;
         p.exp = (p.exp || 1) + 1;
-        if (p.yearsLeft > 0) p.yearsLeft -= 1;
+        // yearsLeft already ticked in tickContracts at season end — do not tick again
         let delta = 0;
         if (p.age <= 28) {
           // young improvement
@@ -611,7 +685,7 @@
     const records = {};
     for (const t of teams) records[t.id] = emptyRecord();
     return {
-      version: 2,
+      version: 4,
       year,
       week: 1,
       phase: "regular", // regular | playoffs | recap | offseason
@@ -666,6 +740,9 @@
       for (const g of games) {
         const res = simulateGame(state.teamsById[g.homeId], state.teamsById[g.awayId], rng);
         g.homeScore = res.homeScore; g.awayScore = res.awayScore; g.stats = res.stats;
+        g.homeStats = res.homeStats; g.awayStats = res.awayStats;
+        g.homeLeaders = res.homeLeaders; g.awayLeaders = res.awayLeaders;
+        g.ot = res.ot;
         applyResult(state, g);
         if (g.homeId === state.userTeamId || g.awayId === state.userTeamId) userBox = g;
       }
@@ -714,6 +791,11 @@
       ovr: ut.ratings.ovr,
       championId: champ
     });
+    // Contract year burns at season end so resign/FA see expirations
+    tickContracts(state);
+    state._contractsYear = state.year;
+    state._expiredReady = false;
+    state._userExpired = null;
     state.phase = "offseason";
     state.offseasonStep = "resign";
     state.offseasonLog = [];
@@ -742,7 +824,7 @@
     salaryFor, contractYears, teamCapHit, recomputeRatings, sortRoster, rosterNeeds,
     createState, userTeam, save, load, clearSave, makeSeasonSchedule, buildScheduleFromTemplate,
     simWeek, standingsList, divisionWinners,
-    ageAndProgress, collectExpired, cpuResign, cpuFreeAgency,
+    tickContracts, ageAndProgress, collectExpired, cpuResign, cpuFreeAgency,
     generateDraftClass, draftOrder, runCpuDraftPicks, startNextSeason,
     finalizeSeason
   };

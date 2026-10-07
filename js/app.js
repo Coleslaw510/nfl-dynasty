@@ -27,6 +27,104 @@
     return `<span class="ovr ${ovrClass(o)}">${o}</span>`;
   }
 
+  function escapeHtml(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function logoMark(t) {
+    if (!t) return `<div class="box-logo" style="background:#64748b">?</div>`;
+    return `<div class="box-logo" style="background:${t.color || "#64748b"}">${escapeHtml(t.abbr || "?")}</div>`;
+  }
+
+  /** CFB-style box score card from a completed game object */
+  function boxHtml(g) {
+    if (!g || g.homeScore == null) {
+      return `<div class="box-empty">Sim a week to see your box score.</div>`;
+    }
+    const home = state.teamsById[g.homeId];
+    const away = state.teamsById[g.awayId];
+    const homeWin = g.homeScore > g.awayScore;
+    const hs = g.homeStats || (g.stats && g.stats.home ? {
+      passYds: g.stats.home.pass, rushYds: g.stats.home.rush, totalYds: (g.stats.home.pass||0)+(g.stats.home.rush||0),
+      completions: "—", passAtt: "—", rushAtt: "—", turnovers: "—", thirdDownConv: "—", thirdDownAtt: "—", timeOfPoss: "—"
+    } : null);
+    const as = g.awayStats || (g.stats && g.stats.away ? {
+      passYds: g.stats.away.pass, rushYds: g.stats.away.rush, totalYds: (g.stats.away.pass||0)+(g.stats.away.rush||0),
+      completions: "—", passAtt: "—", rushAtt: "—", turnovers: "—", thirdDownConv: "—", thirdDownAtt: "—", timeOfPoss: "—"
+    } : null);
+    if (!hs || !as) return `<div class="box-empty">Box stats unavailable for this game.</div>`;
+
+    const rows = [
+      ["Total yards", as.totalYds, hs.totalYds],
+      ["Pass yards", as.passYds, hs.passYds],
+      ["Rush yards", as.rushYds, hs.rushYds],
+      ["Pass C/A", `${as.completions}/${as.passAtt}`, `${hs.completions}/${hs.passAtt}`],
+      ["Rush att", as.rushAtt, hs.rushAtt],
+      ["Turnovers", as.turnovers, hs.turnovers],
+      ["3rd downs", `${as.thirdDownConv}/${as.thirdDownAtt}`, `${hs.thirdDownConv}/${hs.thirdDownAtt}`],
+      ["Time of poss", as.timeOfPoss, hs.timeOfPoss],
+    ];
+    const midParts = [];
+    if (g.kind === "SB") midParts.push("Super Bowl");
+    else if (g.kind === "CONF") midParts.push("Conference");
+    else if (g.kind === "DIV" && g.week >= 19) midParts.push("Divisional");
+    else if (g.kind === "WC") midParts.push("Wild Card");
+    else midParts.push("Week " + (g.week || ""));
+    if (g.ot) midParts.push("OT");
+    const mid = midParts.filter(Boolean).join(" · ");
+
+    function leadersBlock(label, leaders) {
+      if (!leaders || !leaders.passing) return "";
+      const p = leaders.passing;
+      const r = (leaders.rushing && leaders.rushing[0]) || { name: "—", att: 0, yds: 0, td: 0 };
+      const wr = (leaders.receiving && leaders.receiving[0]) || { name: "—", rec: 0, yds: 0, td: 0 };
+      return `
+        <div class="stat-block">
+          <h3>${escapeHtml(label)} leaders</h3>
+          <div class="leader-line"><strong>Pass</strong> ${escapeHtml(p.name)} ${p.comp}/${p.att}, ${p.yds} yds, ${p.td} TD, ${p.int} INT</div>
+          <div class="leader-line"><strong>Rush</strong> ${escapeHtml(r.name)} ${r.att} car, ${r.yds} yds, ${r.td} TD</div>
+          <div class="leader-line"><strong>Rec</strong> ${escapeHtml(wr.name)} ${wr.rec} rec, ${wr.yds} yds, ${wr.td} TD</div>
+        </div>`;
+    }
+
+    return `
+      <div class="box-card card">
+        <div class="box-scoreline">
+          <div class="box-team ${!homeWin ? "winner" : ""}">
+            ${logoMark(away)}
+            <div class="tname">${escapeHtml(away ? away.abbr : "AWAY")}</div>
+            <div class="tscore">${g.awayScore}</div>
+          </div>
+          <div class="box-mid">${escapeHtml(mid)}<br/>FINAL</div>
+          <div class="box-team ${homeWin ? "winner" : ""}">
+            ${logoMark(home)}
+            <div class="tname">${escapeHtml(home ? home.abbr : "HOME")}</div>
+            <div class="tscore">${g.homeScore}</div>
+          </div>
+        </div>
+        <div class="stat-grid">
+          <div class="stat-block">
+            <h3>Team stats</h3>
+            ${rows.map(([label, a, h]) => `
+              <div class="stat-row">
+                <div class="l">${a}</div>
+                <div class="c">${label}</div>
+                <div class="r">${h}</div>
+              </div>`).join("")}
+            <div class="stat-row" style="margin-top:6px">
+              <div class="l muted">${escapeHtml(away ? away.abbr : "AWAY")}</div>
+              <div class="c"></div>
+              <div class="r muted">${escapeHtml(home ? home.abbr : "HOME")}</div>
+            </div>
+          </div>
+          ${leadersBlock(away ? away.abbr : "AWAY", g.awayLeaders)}
+          ${leadersBlock(home ? home.abbr : "HOME", g.homeLeaders)}
+        </div>
+      </div>`;
+  }
+
   function show(view) {
     ["mode", "picker", "season", "offseason"].forEach((v) => {
       const el = $(`#view-${v}`);
@@ -111,7 +209,7 @@
   function setTab(tab) {
     activeTab = tab;
     $$(".tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
-    ["schedule", "roster", "standings", "cap", "history"].forEach((t) => {
+    ["schedule", "box", "roster", "standings", "cap", "history"].forEach((t) => {
       const p = $(`#panel-${t}`);
       if (p) p.hidden = t !== tab;
     });
@@ -157,10 +255,17 @@
 
   function renderActivePanel() {
     if (activeTab === "schedule") renderSchedule();
+    if (activeTab === "box") renderBoxPanel();
     if (activeTab === "roster") renderRoster();
     if (activeTab === "standings") renderStandings();
     if (activeTab === "cap") renderCap();
     if (activeTab === "history") renderHistory();
+  }
+
+  function renderBoxPanel() {
+    const panel = $("#panel-box");
+    if (!panel) return;
+    panel.innerHTML = boxHtml(state.lastBox);
   }
 
   function teamLabel(id) {
@@ -196,10 +301,7 @@
 
     let html = "";
     if (state.lastBox) {
-      const g = state.lastBox;
-      html += `<div class="card"><h3>Last result</h3>
-        <div><strong>${teamName(g.awayId)}</strong> ${g.awayScore} @ <strong>${teamName(g.homeId)}</strong> ${g.homeScore}
-        <div class="muted small">${g.kind || "REG"} · Pass ${g.stats ? `${g.stats.away.pass}/${g.stats.home.pass}` : "—"} · Rush ${g.stats ? `${g.stats.away.rush}/${g.stats.home.rush}` : "—"}</div></div></div>`;
+      html += `<div class="card"><h3>Last result</h3>${boxHtml(state.lastBox)}</div>`;
     }
 
     if (state.phase === "regular" && next) {
@@ -457,36 +559,51 @@
       show("offseason");
       renderOffseason();
     } else {
+      if (state.lastBox) activeTab = "box";
       renderSeason();
     }
     E.save(state);
   }
 
   /* -------- Offseason -------- */
+  function ensureExpiredCollected() {
+    // Safety: if an older save skipped tickContracts, tick once per season year
+    if (state._contractsYear !== state.year) {
+      E.tickContracts(state);
+      state._contractsYear = state.year;
+      state._expiredReady = false;
+      state._userExpired = null;
+    }
+    if (!state._expiredReady) {
+      const expired = E.collectExpired(state);
+      state._userExpired = expired.filter((p) => p.fromTeamId === state.userTeamId);
+      E.cpuResign(state, E.mulberry32(E.hashSeed(state.rngSeed + ":resign" + state.year)));
+      // Keep user-expired players in FA for resign decisions (cpuResign never touches user team)
+      state._expiredReady = true;
+      E.save(state);
+    }
+  }
+
   function renderOffseason() {
     renderTeamChip($("#osTeamChip"));
     refreshMeta();
     const step = state.offseasonStep || "resign";
-    $("#osStepLabel").textContent = ({ resign: "Resign players", fa: "Free agency", draft: "Draft", progress: "Progression", done: "Ready" })[step];
+    $("#osStepLabel").textContent = ({ resign: "Resign players", fa: "Free agency", draft: "Draft", progress: "Progression", done: "Ready" })[step] || step;
     $("#osCapLabel").textContent = `Room ${E.money(state.salaryCap - E.teamCapHit(E.userTeam(state)))}`;
     const body = $("#osBody");
     const btn = $("#btnOsPrimary");
+    btn.disabled = false;
 
     if (step === "resign") {
-      // Ensure expired collected once
-      if (!state._expiredReady) {
-        const expired = E.collectExpired(state);
-        state._userExpired = expired.filter((p) => p.fromTeamId === state.userTeamId);
-        E.cpuResign(state, E.mulberry32(E.hashSeed(state.rngSeed + ":resign" + state.year)));
-        state._expiredReady = true;
-        E.save(state);
-      }
+      ensureExpiredCollected();
       const list = state._userExpired || [];
       let html = `<div class="card"><h3>Resign your free agents</h3>
-        <p class="muted small">Contract years hit zero. Re-sign who you want, then continue — unsigned players stay in free agency.</p>`;
-      if (!list.length) html += `<p class="muted">No pending resigns.</p>`;
+        <p class="muted small">Contract years hit zero after the season. Re-sign who you want — unsigned players stay in free agency.</p>`;
+      if (!list.length) {
+        html += `<p class="muted">No pending resigns this year. Hit Continue to open free agency (${(state.freeAgents || []).length} players available).</p>`;
+      }
       for (const p of list) {
-        const still = state.freeAgents.some((x) => x.id === p.id);
+        const still = (state.freeAgents || []).some((x) => x.id === p.id);
         if (!still) continue;
         html += `<div class="list-actions" style="padding:8px 0;border-top:1px solid var(--line)">
           <div><strong>${p.n}</strong> ${p.pos} ${ovrBadge(p.ovr)} · age ${p.age}<div class="muted small">Asking ${E.money(p.asking)}</div></div>
@@ -516,39 +633,35 @@
       body.querySelectorAll("[data-release]").forEach((b) => b.addEventListener("click", () => {
         const id = +b.dataset.release;
         state._userExpired = (state._userExpired || []).filter((x) => x.id !== id);
-        E.save(state); renderOffseason();
+        E.save(state); renderOffseason(); toast("Player will hit free agency");
       }));
-      btn.onclick = () => {
-        state.offseasonStep = "fa";
-        state._expiredReady = false;
-        E.cpuFreeAgency(state, E.mulberry32(E.hashSeed(state.rngSeed + ":fa" + state.year)));
-        E.save(state); renderOffseason();
-      };
       return;
     }
 
     if (step === "fa") {
-      const fa = state.freeAgents.slice(0, 80);
+      if (!Array.isArray(state.freeAgents)) state.freeAgents = [];
       let html = `<div class="card"><h3>Free agency</h3>
-        <p class="muted small">Sign players under the 53-man limit and salary cap. CPU clubs already took a pass.</p>
+        <p class="muted small">${state.freeAgents.length} players on the market. Sign under the 53-man limit and salary cap.</p>
         <div class="filters"><input id="faSearch" placeholder="Search FA…" /><select id="faBucket"><option value="">All positions</option>${E.BUCKET_ORDER.map((b)=>`<option value="${b}">${b}</option>`).join("")}</select></div>
         <div id="faList"></div></div>`;
       body.innerHTML = html;
       const draw = () => {
-        const q = ($("#faSearch").value || "").toLowerCase();
-        const bucket = $("#faBucket").value;
-        const needs = E.rosterNeeds(E.userTeam(state));
+        const q = (($("#faSearch") && $("#faSearch").value) || "").toLowerCase();
+        const bucket = ($("#faBucket") && $("#faBucket").value) || "";
         const maxCount = state.rosterLimit || E.ROSTER_LIMIT || 53;
         let listHtml = "";
+        let shown = 0;
         for (const p of state.freeAgents) {
           if (bucket && p.bucket !== bucket) continue;
-          if (q && !p.n.toLowerCase().includes(q)) continue;
+          if (q && !(p.n || "").toLowerCase().includes(q)) continue;
+          shown++;
+          if (shown > 120) break;
           listHtml += `<div class="list-actions" style="padding:8px 0;border-top:1px solid var(--line)">
             <div><strong>${p.n}</strong> ${p.pos} ${ovrBadge(p.ovr)} · ${p.age} yrs old<div class="muted small">${E.money(p.asking || p.salary)} · ${p.bucket}</div></div>
             <button type="button" class="btn btn-sm btn-primary" data-sign="${p.id}">Sign</button>
           </div>`;
         }
-        $("#faList").innerHTML = listHtml || `<p class="muted">No players.</p>`;
+        $("#faList").innerHTML = listHtml || `<p class="muted">No players match.</p>`;
         $("#faList").querySelectorAll("[data-sign]").forEach((b) => b.addEventListener("click", () => {
           const id = +b.dataset.sign;
           const p = state.freeAgents.find((x) => x.id === id);
@@ -568,58 +681,35 @@
       $("#faBucket").addEventListener("change", draw);
       draw();
       btn.textContent = "Continue to draft";
-      btn.onclick = () => {
-        const rng = E.mulberry32(E.hashSeed(state.rngSeed + ":draft" + state.year));
-        state.draft = {
-          order: E.draftOrder(state),
-          pool: E.generateDraftClass(state.year + 1, rng),
-          pickIndex: 0,
-          picksTotal: 32 * 3, // 3 rounds v1
-          log: []
-        };
-        E.runCpuDraftPicks(state, rng, true);
-        state.offseasonStep = "draft";
-        E.save(state); renderOffseason();
-      };
       return;
     }
 
     if (step === "draft") {
+      if (!state.draft) {
+        // Recover if Continue somehow skipped draft init
+        beginDraft();
+      }
       const d = state.draft;
       const onClock = d.order[d.pickIndex % 32];
       const round = Math.floor(d.pickIndex / 32) + 1;
       const pickInRound = (d.pickIndex % 32) + 1;
       let html = `<div class="card"><h3>Draft · Round ${round}, Pick ${pickInRound}</h3>`;
       if (d.pickIndex >= d.picksTotal) {
-        html += `<p class="muted">Draft complete (3 rounds in v1).</p></div>`;
+        html += `<p class="muted">Draft complete (3 rounds).</p></div>`;
         body.innerHTML = html;
         btn.textContent = "Run progression";
-        btn.onclick = () => {
-          const rng = E.mulberry32(E.hashSeed(state.rngSeed + ":age" + state.year));
-          state.offseasonLog = E.ageAndProgress(state, rng);
-          state.offseasonStep = "progress";
-          E.save(state); renderOffseason();
-        };
         return;
       }
       if (onClock !== state.userTeamId) {
         html += `<p class="muted">CPU is picking…</p></div>`;
         body.innerHTML = html;
         btn.textContent = "Sim to my pick";
-        btn.onclick = () => {
-          E.runCpuDraftPicks(state, E.mulberry32(E.hashSeed(state.rngSeed + ":d" + d.pickIndex)), true);
-          if (state.draft.pickIndex >= state.draft.picksTotal) {
-            /* fall through */
-          }
-          E.save(state); renderOffseason();
-        };
-        // auto-kick once
         setTimeout(() => {
           if (state.offseasonStep === "draft" && state.draft && state.draft.order[state.draft.pickIndex % 32] !== state.userTeamId) {
             E.runCpuDraftPicks(state, E.mulberry32(E.hashSeed(state.rngSeed + ":d" + state.draft.pickIndex)), true);
             E.save(state); renderOffseason();
           }
-        }, 50);
+        }, 40);
         return;
       }
       html += `<p class="muted small">You're on the clock. Board sorted by overall.</p>`;
@@ -636,12 +726,6 @@
       body.querySelectorAll("[data-draft]").forEach((b) => b.addEventListener("click", () => {
         draftPlayer(+b.dataset.draft);
       }));
-      btn.onclick = () => {
-        const needs = E.rosterNeeds(E.userTeam(state)).gaps.map((g) => g.bucket);
-        let pick = needs.length ? d.pool.find((p) => needs.includes(p.bucket)) : null;
-        if (!pick) pick = d.pool[0];
-        if (pick) draftPlayer(pick.id);
-      };
       return;
     }
 
@@ -658,17 +742,84 @@
       html += `</div>`;
       body.innerHTML = html;
       btn.textContent = `Start ${state.year + 1} season`;
-      btn.onclick = () => {
+      return;
+    }
+
+    body.innerHTML = `<div class="card"><p class="muted">Unknown offseason step.</p></div>`;
+    btn.textContent = "Continue";
+  }
+
+  function beginDraft() {
+    const rng = E.mulberry32(E.hashSeed(state.rngSeed + ":draft" + state.year));
+    state.draft = {
+      order: E.draftOrder(state),
+      pool: E.generateDraftClass(state.year + 1, rng),
+      pickIndex: 0,
+      picksTotal: 32 * 3,
+      log: []
+    };
+    E.runCpuDraftPicks(state, rng, true);
+  }
+
+  function advanceOffseason() {
+    if (!state || state.phase !== "offseason") return;
+    const step = state.offseasonStep || "resign";
+    try {
+      if (step === "resign") {
+        // Let remaining unsigned user FAs stay in pool; CPU already resigned theirs
+        E.cpuFreeAgency(state, E.mulberry32(E.hashSeed(state.rngSeed + ":fa" + state.year)));
+        state.offseasonStep = "fa";
+        E.save(state);
+        renderOffseason();
+        toast(`Free agency open · ${(state.freeAgents || []).length} players`);
+        return;
+      }
+      if (step === "fa") {
+        beginDraft();
+        state.offseasonStep = "draft";
+        E.save(state);
+        renderOffseason();
+        return;
+      }
+      if (step === "draft") {
+        const d = state.draft;
+        if (!d) { beginDraft(); E.save(state); renderOffseason(); return; }
+        if (d.pickIndex >= d.picksTotal) {
+          const rng = E.mulberry32(E.hashSeed(state.rngSeed + ":age" + state.year));
+          state.offseasonLog = E.ageAndProgress(state, rng);
+          state.offseasonStep = "progress";
+          E.save(state);
+          renderOffseason();
+          return;
+        }
+        if (d.order[d.pickIndex % 32] !== state.userTeamId) {
+          E.runCpuDraftPicks(state, E.mulberry32(E.hashSeed(state.rngSeed + ":d" + d.pickIndex)), true);
+          E.save(state);
+          renderOffseason();
+          return;
+        }
+        // Auto-pick best need
+        const needs = E.rosterNeeds(E.userTeam(state)).gaps.map((g) => g.bucket);
+        let pick = needs.length ? d.pool.find((p) => needs.includes(p.bucket)) : null;
+        if (!pick) pick = d.pool[0];
+        if (pick) draftPlayer(pick.id);
+        return;
+      }
+      if (step === "progress") {
         E.startNextSeason(state);
         delete state._expiredReady;
         delete state._userExpired;
+        // keep _contractsYear as prior year so next offseason reticks
         E.save(state);
         show("season");
         activeTab = "schedule";
         renderSeason();
         toast(`${state.year} season underway`);
-      };
-      return;
+        return;
+      }
+    } catch (err) {
+      console.error(err);
+      toast("Offseason error — see console");
     }
   }
 
@@ -716,6 +867,7 @@
     $("#teamSearch").addEventListener("input", renderPicker);
     $("#confFilter").addEventListener("change", renderPicker);
     $("#btnPrimary").addEventListener("click", onPrimary);
+    $("#btnOsPrimary").addEventListener("click", advanceOffseason);
     $("#btnFullReset").addEventListener("click", () => {
       if (!confirm("Full reset? This clears your dynasty save.")) return;
       E.clearSave();
